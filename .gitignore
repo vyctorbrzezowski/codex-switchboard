@@ -1,0 +1,31 @@
+.DS_Store
+
+# Swift / macOS build outputs
+.build/
+.swiftpm/
+dist/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+*.xcarchive
+*.xcresult
+*.moved-aside
+
+# Generated app bundles and archives
+*.app
+*.dmg
+*.pkg
+*.zip
+*.tar.gz
+
+# Local Python leftovers from pre-release history
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local environment and editor files
+.env
+.env.*
+.idea/
+.vscode/
