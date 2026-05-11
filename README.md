@@ -1,7 +1,9 @@
 # Codex Switchboard
 
 <p align="center">
-  <img src="Support/codex.png" width="96" height="96" alt="Codex Switchboard">
+  <img src="https://img.shields.io/badge/platform-macOS%2013+-000000?logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/swift-5.9-F05138?logo=swift" alt="Swift 5.9">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
 </p>
 
 <p align="center">
@@ -9,9 +11,13 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS%2013+-000000?logo=apple" alt="macOS 13+">
-  <img src="https://img.shields.io/badge/swift-5.9-F05138?logo=swift" alt="Swift 5.9">
-  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+  <img src="Support/screenshots/empty-state.png" width="320" alt="Empty state">
+  <img src="Support/screenshots/compact-view.png" width="320" alt="Compact view">
+</p>
+
+<p align="center">
+  <img src="Support/screenshots/grouped-teams.png" width="320" alt="Grouped by team">
+  <img src="Support/screenshots/expanded-view.png" width="320" alt="Expanded view with plan renewal">
 </p>
 
 ---
@@ -37,16 +43,6 @@
 - **Local-First** — All data stays on your machine; no cloud sync
 - **Secure Token Storage** — Sensitive files written with `0600` permissions
 - **Smart Ordering** — Accounts are implicitly ranked by a composite score so the "best account to use now" surfaces to the top
-
-## Screenshots
-
-| Empty state | Compact view |
-|-------------|--------------|
-| ![No accounts found](https://i.imgur.com/kt50zJA.png) | ![Compact view](https://i.imgur.com/2fesVAi.png) |
-
-| Grouped by team | Expanded view |
-|-----------------|---------------|
-| ![Showing separated teams](https://i.imgur.com/Dn9ErMx.png) | ![Non-compact view showing teams and plan renewal](https://i.imgur.com/Ia8Hb7g.png) |
 
 ## Smart Ordering
 
