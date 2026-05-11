@@ -1,18 +1,54 @@
 # Codex Switchboard
 
-Codex Switchboard is a local-first macOS menu bar app for people who use Codex with multiple accounts or workspaces they control. It shows best-effort Codex/OpenAI usage, groups accounts by workspace, marks invalid or deactivated accounts, shows which account is active in Codex, and lets you manually switch the active local Codex account.
+<p align="center">
+  <img src="Support/codex.png" width="96" height="96" alt="Codex Switchboard">
+</p>
 
-Codex Switchboard is not affiliated with OpenAI. It does not change Codex/OpenAI limits, share accounts, or automate account cycling. It only helps you see local usage state and manually switch between accounts/workspaces you control.
+<p align="center">
+  A local-first macOS menu bar app for managing multiple Codex/OpenAI accounts and workspaces.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS%2013+-000000?logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/swift-5.9-F05138?logo=swift" alt="Swift 5.9">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+</p>
+
+---
+
+## Overview
+
+**Codex Switchboard** helps you manage multiple Codex/OpenAI accounts and workspaces directly from your Mac menu bar.
+
+- View real-time usage across all your accounts
+- Group accounts by workspace/team
+- Instantly see which account is active
+- Switch active accounts with one click
+- Identify invalid or deactivated accounts
+
+> **Disclaimer:** Codex Switchboard is not affiliated with OpenAI. It does not change Codex/OpenAI limits, share accounts, or automate account cycling. It only helps you view local usage state and manually switch between accounts you control.
+
+## Features
+
+- **Usage Dashboard** — Best-effort usage tracking across all linked accounts
+- **Workspace Grouping** — Accounts organized by team/workspace
+- **Account Health** — Visual indicators for invalid or deactivated accounts
+- **One-Click Switching** — Change your active Codex account instantly
+- **Local-First** — All data stays on your machine; no cloud sync
+- **Secure Token Storage** — Sensitive files written with `0600` permissions
 
 ## Requirements
 
-- macOS 13 or newer
-- Xcode Command Line Tools or Xcode with Swift 5.9 or newer
-- Codex.app installed in `/Applications/Codex.app` for account switching
+- macOS 13 (Ventura) or newer
+- [Codex.app](https://github.com/openai/codex) installed in `/Applications/Codex.app` (for account switching)
 
-## Install From Source
+## Installation
 
-This first public release is source-first and intended for developers. It does not ship a signed and notarized public binary yet.
+### Option 1: Installer Package (Recommended)
+
+Download the latest `.pkg` from [Releases](../../releases), double-click to run the installer, and Codex Switchboard will be installed to `/Applications`.
+
+### Option 2: Build From Source
 
 ```bash
 git clone https://github.com/vyctorbrzezowski/codex-switchboard.git
@@ -23,50 +59,57 @@ swift build
 open dist/CodexSwitchboard.app
 ```
 
-`build-app.sh` creates a local ad-hoc-signed app bundle. Public binary distribution should use Developer ID signing and notarization.
+### Building the Installer
 
-## Data Access
+To generate a `.pkg` installer from the built app:
 
-Codex Switchboard reads and writes only local files:
+```bash
+./build-app.sh
+./build-pkg.sh
+```
 
-- Reads and writes `~/Library/Application Support/CodexSwitchboard/`
-- Reads `~/.codex/auth.json` to detect the active Codex account
-- Writes `~/.codex/auth.json` only when you manually choose an account in the menu bar
+The installer will be created at `dist/CodexSwitchboard-1.0.0.pkg`.
 
-On a fresh install, Codex Switchboard starts with no accounts. Add each account from the menu bar login flow.
+## Data & Privacy
 
-Account switching appears only when Codex.app is installed locally. Without Codex.app, Codex Switchboard works as a usage monitor for added accounts.
+Codex Switchboard is local-first and never syncs tokens or exposes a remote service.
 
-Sensitive app-owned files are written with `0600` permissions. Token-containing directories and backups are kept under `~/Library/Application Support/CodexSwitchboard/` with owner-only directory permissions.
+### Local Files
 
-## Stored Files
+| Path | Purpose |
+|------|---------|
+| `~/Library/Application Support/CodexSwitchboard/accounts.json` | Account list |
+| `~/Library/Application Support/CodexSwitchboard/profiles/<profile>/auth.json` | Profile tokens |
+| `~/Library/Application Support/CodexSwitchboard/profiles/<profile>/meta.json` | Profile metadata |
+| `~/Library/Application Support/CodexSwitchboard/accounts-snapshot.json` | Usage snapshots |
+| `~/Library/Application Support/CodexSwitchboard/team-name-cache.json` | Team name cache |
+| `~/Library/Application Support/CodexSwitchboard/backups/<timestamp>-remove-account/` | Backups before removal |
 
-- `~/Library/Application Support/CodexSwitchboard/accounts.json`
-- `~/Library/Application Support/CodexSwitchboard/profiles/<profile>/auth.json`
-- `~/Library/Application Support/CodexSwitchboard/profiles/<profile>/meta.json`
-- `~/Library/Application Support/CodexSwitchboard/accounts-snapshot.json`
-- `~/Library/Application Support/CodexSwitchboard/team-name-cache.json`
-- `~/Library/Application Support/CodexSwitchboard/backups/<timestamp>-remove-account/`
+All sensitive files are written with `0600` permissions. Removal actions create backups before deleting profile data.
 
-Removal actions create a backup before deleting app-owned profile data.
+### Network Calls
 
-## Network Calls
-
-Codex Switchboard uses local Codex/OpenAI auth tokens to make best-effort requests to ChatGPT/Codex web endpoints:
+The app uses your local Codex/OpenAI auth tokens to query:
 
 - `https://chatgpt.com/backend-api/codex/usage`
 - `https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27`
 - `https://auth.openai.com/oauth/authorize`
 - `https://auth.openai.com/oauth/token`
 
-These endpoints are not an official public API contract for this app. Behavior may change or fail without notice.
+These are not official public APIs and may change without notice.
 
-## Security Posture
+### Security
 
-Codex Switchboard does not sync tokens, expose a remote service, or log bearer tokens. The OAuth callback server binds only to `localhost:1455` during login capture and closes after the flow finishes or times out.
-
-See [SECURITY.md](SECURITY.md) for the short threat model.
+- Bearer tokens are never logged or transmitted to third parties
+- OAuth callback server binds only to `localhost:1455` and closes immediately after login
+- See [SECURITY.md](SECURITY.md) for the full threat model
 
 ## Contributing
 
-Issues and pull requests are welcome. Keep changes local-first, avoid token logging, and run `swift test` before opening a PR.
+Issues and pull requests are welcome. Please keep changes local-first, avoid token logging, and run `swift test` before opening a PR.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+[MIT](LICENSE)
