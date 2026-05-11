@@ -36,6 +36,25 @@
 - **One-Click Switching** — Change your active Codex account instantly
 - **Local-First** — All data stays on your machine; no cloud sync
 - **Secure Token Storage** — Sensitive files written with `0600` permissions
+- **Smart Ordering** — Accounts are implicitly ranked by a composite score so the "best account to use now" surfaces to the top
+
+## Screenshots
+
+| Empty state | Compact view |
+|-------------|--------------|
+| ![No accounts found](https://i.imgur.com/kt50zJA.png) | ![Compact view](https://i.imgur.com/2fesVAi.png) |
+
+| Grouped by team | Expanded view |
+|-----------------|---------------|
+| ![Showing separated teams](https://i.imgur.com/Dn9ErMx.png) | ![Non-compact view showing teams and plan renewal](https://i.imgur.com/Ia8Hb7g.png) |
+
+## Smart Ordering
+
+Codex Switchboard automatically re-orders your accounts so the best one to use right now appears first.
+
+- **Smart score** — `min(sessionFree, weeklyFree)`; the account with the highest bottlenecked balance wins.
+- **Priority strip** — Accounts with useful balance whose weekly window resets in less than 24 hours get a temporary urgency boost and appear in a dedicated top section.
+- **Exhausted accounts** — Sorted by who resets first, so you know which one will be usable again soonest.
 
 ## Requirements
 
