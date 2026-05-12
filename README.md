@@ -83,7 +83,7 @@ To generate a `.pkg` installer from the built app:
 ./build-pkg.sh
 ```
 
-The installer will be created at `dist/CodexSwitchboard-1.0.0.pkg`.
+The installer will be created at `dist/CodexSwitchboard-<version>.pkg`.
 
 ## Data & Privacy
 

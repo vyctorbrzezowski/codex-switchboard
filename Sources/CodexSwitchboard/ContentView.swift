@@ -144,15 +144,18 @@ struct HeaderView: View {
             Button {
                 vm.toggleInformationMode()
             } label: {
-                Image(systemName: vm.informationMode == .complete ? "list.bullet" : "list.bullet.rectangle")
-                    .font(.system(size: 13))
-                    .foregroundColor(vm.informationMode == .complete ? .secondary : .primary)
-                    .frame(width: 24, height: 22)
-                    .background(vm.informationMode == .focused ? Color.primary.opacity(0.15) : Color.clear)
-                    .cornerRadius(6)
+                let isExpanded = vm.informationMode == .complete
+                ZStack {
+                    Color.clear
+                    Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(vm.informationMode == .complete ? "Hide details" : "Show details")
+            .help(vm.informationMode == .complete ? "Compact view" : "Expand view")
 
             Button {
                 vm.toggleGroupByWorkspace()

@@ -82,8 +82,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             removeEventMonitor()
         } else {
             resetPopoverToCompactMode()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
             eventMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown]
             ) { [weak self] _ in

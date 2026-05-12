@@ -193,8 +193,8 @@ struct AccountRow: View {
 
 private enum CompactRowLayout {
     static let horizontalPadding: CGFloat = 12
-    static let emailMinWidth: CGFloat = 96
-    static let actionWidth: CGFloat = 20
+    static let emailMinWidth: CGFloat = 160
+    static let actionWidth: CGFloat = 96
 
     struct Metrics {
         let spacing: CGFloat
@@ -214,11 +214,9 @@ private enum CompactRowLayout {
     ) -> Metrics {
         let spacing: CGFloat = showsFullInformation ? 4 : 8
         let contentWidth = max(0, totalWidth - horizontalPadding * 2)
-        let rowActionWidth = showsActionControl ? actionWidth : 0
-
         guard showsFullInformation else {
             let metricWidth: CGFloat = 66
-            let fixedWidth = rowActionWidth + metricWidth * 2 + spacing * 4 + 16
+            let fixedWidth = actionWidth + metricWidth * 2 + spacing * 4 + 16
             return Metrics(
                 spacing: spacing,
                 emailWidth: max(emailMinWidth, contentWidth - fixedWidth),
@@ -227,7 +225,7 @@ private enum CompactRowLayout {
                 sessionResetWidth: 0,
                 weeklyResetWidth: 0,
                 planCycleWidth: 0,
-                actionWidth: rowActionWidth
+                actionWidth: actionWidth
             )
         }
 
@@ -236,14 +234,15 @@ private enum CompactRowLayout {
         let sessionResetWidth: CGFloat = 34
         let weeklyResetWidth: CGFloat = 64
         let planCycleWidth: CGFloat = 32
+        let swapControlWidth: CGFloat = actionWidth
         let fixedWidth = 16
             + workspaceWidth
-            + rowActionWidth
+            + swapControlWidth
             + metricWidth * 2
             + sessionResetWidth
             + weeklyResetWidth
             + planCycleWidth
-            + spacing * (showsActionControl ? 6 : 5)
+            + spacing * 6
 
         return Metrics(
             spacing: spacing,
@@ -253,7 +252,7 @@ private enum CompactRowLayout {
             sessionResetWidth: sessionResetWidth,
             weeklyResetWidth: weeklyResetWidth,
             planCycleWidth: planCycleWidth,
-            actionWidth: rowActionWidth
+            actionWidth: swapControlWidth
         )
     }
 }
@@ -278,8 +277,11 @@ struct AccountCompactRow: View {
 
     private var exhausted: Bool { account.isWeeklyExhausted }
     private var showsFullInformation: Bool { informationMode == .complete }
-    private var showsActionControl: Bool { needsRelogin || isRelogging || isSwitchingToCodex || showsCodexControls }
+    private var showsActionControl: Bool { needsRelogin || isRelogging || isSwitchingToCodex || (showsCodexControls && !isActiveInCodex) }
     private var rowHeight: CGFloat { showsFullInformation ? 34 : 28 }
+    private var canShowSwapControl: Bool {
+        showsCodexControls && !isActiveInCodex && !needsRelogin && !isRelogging && !exhausted
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -289,13 +291,13 @@ struct AccountCompactRow: View {
                 showsActionControl: showsActionControl
             )
             HStack(alignment: .center, spacing: layout.spacing) {
-                removeControl
+                leadingAccountControl
 
                 Text(account.email)
                     .font(.system(size: 11))
                     .foregroundColor(.primary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .frame(width: layout.emailWidth, alignment: .leading)
 
                 if showsFullInformation {
@@ -303,9 +305,7 @@ struct AccountCompactRow: View {
                         .frame(width: layout.workspaceWidth, alignment: .leading)
                 }
 
-                if showsActionControl {
-                    reloginControl(width: layout.actionWidth)
-                }
+                accountActionControl(width: layout.actionWidth)
 
                 if showsFullInformation {
                     sessionMetricGroup(layout: layout)
@@ -328,9 +328,11 @@ struct AccountCompactRow: View {
             .padding(.horizontal, CompactRowLayout.horizontalPadding)
             .padding(.vertical, showsFullInformation ? 7 : 5)
             .frame(width: proxy.size.width, height: rowHeight, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .frame(height: rowHeight)
         .background(hovered ? Color.primary.opacity(0.06) : .clear)
+        .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .contextMenu {
             Button("Copy email") {
@@ -341,9 +343,18 @@ struct AccountCompactRow: View {
     }
 
     @ViewBuilder
-    private var removeControl: some View {
+    private var leadingAccountControl: some View {
         Group {
-            if isRemoving {
+            if showsCodexControls && isActiveInCodex {
+                CodexIconView()
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(Color(hex: "30D158"))
+                            .background(Circle().fill(.black.opacity(0.72)))
+                    }
+                    .help("Active in Codex")
+            } else if isRemoving {
                 ProgressView()
                     .controlSize(.mini)
                     .scaleEffect(0.6)
@@ -462,7 +473,7 @@ struct AccountCompactRow: View {
     }
 
     @ViewBuilder
-    private func reloginControl(width: CGFloat) -> some View {
+    private func accountActionControl(width: CGFloat) -> some View {
         Group {
             if isRelogging {
                 Button(action: cancelRelogin) {
@@ -487,27 +498,43 @@ struct AccountCompactRow: View {
                 ProgressView()
                     .controlSize(.mini)
                     .scaleEffect(0.65)
-            } else if showsCodexControls && isActiveInCodex {
-                CodexIconView()
-                    .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 7, weight: .bold))
-                            .foregroundColor(Color(hex: "30D158"))
-                            .background(Circle().fill(.black.opacity(0.75)))
-                    }
-                    .help("Active in Codex")
-            } else if showsCodexControls {
-                Button(action: switchToCodex) {
-                    CodexIconView()
-                }
-                .buttonStyle(.plain)
-                .disabled(isSwitchBlocked)
-                .help("Use in Codex")
+            } else if canShowSwapControl {
+                SwitchAccountButton(action: switchToCodex)
+                    .disabled(isSwitchBlocked)
+                    .opacity(hovered ? 1 : 0)
+                    .allowsHitTesting(hovered)
             } else {
                 Color.clear.frame(width: width, height: 1)
             }
         }
         .frame(width: width, height: 18)
+    }
+}
+
+struct SwitchAccountButton: View {
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 8, weight: .semibold))
+                Text("Use in Codex")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+                .foregroundStyle(.primary.opacity(hovered ? 0.92 : 0.78))
+                .frame(width: 86, height: 18)
+                .background(hovered ? .thinMaterial : .ultraThinMaterial)
+                .clipShape(Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(Color.primary.opacity(hovered ? 0.26 : 0.14), lineWidth: 0.6)
+                }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help("Use in Codex")
     }
 }
 

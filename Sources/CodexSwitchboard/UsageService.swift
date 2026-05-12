@@ -18,14 +18,6 @@ final class UsageService: Sendable {
         let profiles = collection.profiles
         let validKeys = collection.orderedKeys.filter { profiles[$0] != nil }
 
-        // Demo mode: return mock data when all tokens are mock tokens.
-        let allMock = validKeys.allSatisfy {
-            (profiles[$0]?["access"] as? String)?.hasPrefix("mock_") == true
-        }
-        if allMock && !validKeys.isEmpty {
-            return mockAccounts(for: profiles, keys: validKeys)
-        }
-
         // Fetch usage concurrently
         let usages: [String: [String: Any]] = await withTaskGroup(
             of: (String, [String: Any]).self
@@ -156,7 +148,7 @@ final class UsageService: Sendable {
     }
 
     private func fetchAccountMetadata(token: String) async -> [String: AccountMetadata] {
-        let data = await apiGet("/backend-api/accounts/check/v4-2023-04-27", token: token)
+        let data = await apiGet("/backend-api/accounts/check/v4-2023-04-27", token: token, timeout: 4)
         var result: [String: AccountMetadata] = [:]
         if let accts = data["accounts"] as? [String: [String: Any]] {
             for (aid, info) in accts {
@@ -229,11 +221,11 @@ final class UsageService: Sendable {
         }
     }
 
-    private func apiGet(_ endpoint: String, token: String) async -> [String: Any] {
+    private func apiGet(_ endpoint: String, token: String, timeout: TimeInterval = 10) async -> [String: Any] {
         guard let url = URL(string: "https://chatgpt.com\(endpoint)") else {
             return ["error": "bad URL"]
         }
-        var req = URLRequest(url: url, timeoutInterval: 10)
+        var req = URLRequest(url: url, timeoutInterval: timeout)
         req.setValue("Bearer \(token)",   forHTTPHeaderField: "Authorization")
         req.setValue(ua,                  forHTTPHeaderField: "User-Agent")
         req.setValue("application/json",  forHTTPHeaderField: "Accept")
@@ -403,40 +395,4 @@ final class UsageService: Sendable {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
-
-    private func mockAccounts(for profiles: [String: [String: Any]], keys: [String]) -> [Account] {
-        var accounts: [Account] = []
-        var seen = Set<String>()
-        let now = Date()
-        let fixtures: [(workspace: String, plan: String, sessionFree: Double, weeklyFree: Double, hasError: Bool, errorMessage: String?)] = [
-            ("Acme Engineering", "team", 82, 64, false, nil),
-            ("startup.io", "plus", 35, 12, false, nil),
-            ("plus", "plus", 8, 3, false, nil),
-            ("OldCorp", "team", 0, 0, true, "Workspace deactivated"),
-        ]
-        for (index, key) in keys.enumerated() {
-            guard let p = profiles[key] else { continue }
-            let email = (p["email"] as? String) ?? key.components(separatedBy: ":").last ?? key
-            let aid = (p["accountId"] as? String) ?? ""
-            let dedup = "\(email.lowercased())|\(aid)"
-            guard !seen.contains(dedup) else { continue }
-            seen.insert(dedup)
-            let f = fixtures[index % fixtures.count]
-            accounts.append(Account(
-                id: dedup,
-                profileKey: key,
-                email: email,
-                workspace: f.workspace,
-                plan: f.plan,
-                sessionFree: f.sessionFree,
-                weeklyFree: f.weeklyFree,
-                sessionResetSeconds: 1800,
-                weeklyResetSeconds: 86400 * 2 + 3600 * 5,
-                planRenewalDate: f.hasError ? nil : now.addingTimeInterval(86400 * 14),
-                hasError: f.hasError,
-                errorMessage: f.errorMessage
-            ))
-        }
-        return accounts
-    }
 }

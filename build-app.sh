@@ -5,6 +5,7 @@
 #   PRODUCT_NAME  App bundle filename without .app.
 #   DISPLAY_NAME  Finder / Spotlight name.
 #   BUNDLE_ID     CFBundleIdentifier.
+#   VERSION       CFBundleShortVersionString and CFBundleVersion.
 #   INSTALL_APPS  If 1, copies the generated app to /Applications.
 #
 # Usage:
@@ -21,6 +22,7 @@ cd "$ROOT"
 PRODUCT_NAME="${PRODUCT_NAME:-CodexSwitchboard}"
 DISPLAY_NAME="${DISPLAY_NAME:-Codex Switchboard}"
 BUNDLE_ID="${BUNDLE_ID:-app.codexswitchboard.menubar}"
+VERSION="${VERSION:-1.0.1}"
 INSTALL_APPS="${INSTALL_APPS:-0}"
 
 ICNS="${ROOT}/Support/AppIcon.icns"
@@ -52,6 +54,8 @@ PLIST="${OUT}/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${DISPLAY_NAME}" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ${DISPLAY_NAME}" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "$PLIST"
 
 if command -v codesign &>/dev/null; then
 	codesign --force --deep --sign - "$OUT" 2>/dev/null || true

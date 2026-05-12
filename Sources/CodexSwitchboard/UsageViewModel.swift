@@ -40,6 +40,8 @@ final class UsageViewModel: ObservableObject {
     private var refreshTimer: Timer?
     private var reloginTask: Task<Void, Never>?
     private var switchTask: Task<Void, Never>?
+    private var pendingDebouncedRefreshTask: Task<Void, Never>?
+    private var pendingRefreshAfterCurrent = false
 
     // MARK: - Init
 
@@ -150,7 +152,18 @@ final class UsageViewModel: ObservableObject {
     // MARK: - Actions
 
     func refresh() {
-        guard !isLoading else { return }
+        pendingDebouncedRefreshTask?.cancel()
+        pendingDebouncedRefreshTask = nil
+
+        guard !isLoading else {
+            pendingRefreshAfterCurrent = true
+            return
+        }
+
+        runRefresh()
+    }
+
+    private func runRefresh() {
         isLoading = true
         error = nil
         codexLoginStatus = CodexLoginStatusStore.load()
@@ -166,6 +179,24 @@ final class UsageViewModel: ObservableObject {
             refreshCodexAvailability()
             isLoading = false
             startTimer()
+            if pendingRefreshAfterCurrent {
+                pendingRefreshAfterCurrent = false
+                refresh()
+            }
+        }
+    }
+
+    private func schedulePostCaptureRefresh() {
+        pendingDebouncedRefreshTask?.cancel()
+        pendingDebouncedRefreshTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.pendingDebouncedRefreshTask = nil
+            self.refresh()
         }
     }
 
@@ -199,6 +230,8 @@ final class UsageViewModel: ObservableObject {
 
     func addAccount() {
         guard !hasPendingAccountAction else { return }
+        pendingDebouncedRefreshTask?.cancel()
+        pendingDebouncedRefreshTask = nil
         isAddingAccount = true
         accountActionError = nil
 
@@ -209,7 +242,7 @@ final class UsageViewModel: ObservableObject {
                 codexLoginStatus = CodexLoginStatusStore.load()
                 isAddingAccount = false
                 reloginTask = nil
-                refresh()
+                schedulePostCaptureRefresh()
             } catch is CancellationError {
                 isAddingAccount = false
                 reloginTask = nil
@@ -224,6 +257,8 @@ final class UsageViewModel: ObservableObject {
 
     func relogin(_ account: Account) {
         guard !hasPendingAccountAction else { return }
+        pendingDebouncedRefreshTask?.cancel()
+        pendingDebouncedRefreshTask = nil
         reloggingAccountID = account.id
         accountActionError = nil
 
@@ -234,7 +269,7 @@ final class UsageViewModel: ObservableObject {
                 codexLoginStatus = CodexLoginStatusStore.load()
                 reloggingAccountID = nil
                 reloginTask = nil
-                refresh()
+                schedulePostCaptureRefresh()
             } catch is CancellationError {
                 reloggingAccountID = nil
                 reloginTask = nil

@@ -98,10 +98,7 @@ final class CodexAccountCaptureService: @unchecked Sendable {
 
         let tokenResponse = try await exchangeCode(code, verifier: verifier)
         let identity = try identity(from: tokenResponse.idToken)
-        let localProfileKey = try await plannedLocalProfileKey(
-            identity: identity,
-            tokenResponse: tokenResponse
-        )
+        let localProfileKey = try plannedLocalProfileKey(identity: identity)
         let profileName = try writeCapturedAuth(
             tokenResponse,
             identity: identity,
@@ -199,7 +196,7 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     }
 
     private func exchangeCode(_ code: String, verifier: String) async throws -> OAuthTokenResponse {
-        var request = URLRequest(url: tokenURL)
+        var request = URLRequest(url: tokenURL, timeoutInterval: 15)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = URLSearchParams([
@@ -347,20 +344,14 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     }
 
     private func plannedLocalProfileKey(
-        identity: CapturedIdentity,
-        tokenResponse: OAuthTokenResponse
-    ) async throws -> String {
+        identity: CapturedIdentity
+    ) throws -> String {
         let profiles = AccountProfileStore.load().profiles
-        let tokenWorkspaceScope = await fetchWorkspaceScope(
-            accountID: identity.accountID,
-            accessToken: tokenResponse.accessToken
-        )
 
         return resolveLocalProfileKey(
             profiles: profiles,
             email: identity.email,
-            accountID: identity.accountID,
-            tokenWorkspaceScope: tokenWorkspaceScope
+            accountID: identity.accountID
         )
     }
 
@@ -401,11 +392,10 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     private func resolveLocalProfileKey(
         profiles: [String: Any],
         email: String,
-        accountID: String,
-        tokenWorkspaceScope: String?
+        accountID: String
     ) -> String {
         let resolvedScope = accountScopeSegment(accountID: accountID, profiles: profiles)
-        let scope = tokenWorkspaceScope ?? resolvedScope ?? "team"
+        let scope = resolvedScope ?? "team"
         let base = "openai-codex:\(scope):\(email)"
 
         if let existing = profiles[base] as? [String: Any],
@@ -416,31 +406,6 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         }
 
         return base
-    }
-
-    private func fetchWorkspaceScope(accountID: String, accessToken: String) async -> String? {
-        guard let url = URL(string: "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27") else {
-            return nil
-        }
-
-        var request = URLRequest(url: url, timeoutInterval: 10)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("https://chatgpt.com", forHTTPHeaderField: "Origin")
-        request.setValue("https://chatgpt.com/", forHTTPHeaderField: "Referer")
-
-        guard let (data, _) = try? await URLSession.shared.data(for: request),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let accounts = root["accounts"] as? [String: Any],
-              let account = accounts[accountID] as? [String: Any],
-              let accountInfo = account["account"] as? [String: Any],
-              let name = accountInfo["name"] as? String,
-              let result = sanitizedKeySegment(name),
-              !result.isLegacyProfileScope else {
-            return nil
-        }
-        return result
     }
 
     private func accountScopeSegment(accountID: String, profiles: [String: Any]) -> String? {
@@ -1142,7 +1107,21 @@ private final class OAuthCallbackServer: @unchecked Sendable {
     }
 
     private func handle(_ connection: NWConnection) {
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self, let connection else { return }
+            switch state {
+            case .ready:
+                self.receiveRequest(on: connection)
+            case .failed, .cancelled:
+                connection.cancel()
+            default:
+                break
+            }
+        }
         connection.start(queue: queue)
+    }
+
+    private func receiveRequest(on connection: NWConnection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
             guard let self else { return }
             guard let data,
@@ -1208,6 +1187,9 @@ private final class OAuthCallbackServer: @unchecked Sendable {
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
         })
+        queue.asyncAfter(deadline: .now() + 1) {
+            connection.cancel()
+        }
     }
 
     private func finish(with result: OAuthCallbackResult?) {
