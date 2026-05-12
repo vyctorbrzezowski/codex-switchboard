@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Switchboard - macOS Codex quota tracker and account switcher</title>
+    <meta
+      name="description"
+      content="Codex Switchboard is a local-first macOS menu bar app for OpenAI Codex quota tracking, multi-account switching, and workspace usage visibility."
+    >
+    <link rel="canonical" href="https://vyctorbrzezowski.github.io/codex-switchboard/">
+    <meta property="og:title" content="Codex Switchboard">
+    <meta
+      property="og:description"
+      content="Local-first macOS menu bar app for OpenAI Codex quota tracking, account switching, and workspace usage visibility."
+    >
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://vyctorbrzezowski.github.io/codex-switchboard/">
+    <meta
+      property="og:image"
+      content="https://raw.githubusercontent.com/vyctorbrzezowski/codex-switchboard/main/Support/screenshots/expanded-view.png"
+    >
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Codex Switchboard">
+    <meta
+      name="twitter:description"
+      content="macOS Codex quota tracking, account switching, and workspace usage visibility from the menu bar."
+    >
+    <meta
+      name="twitter:image"
+      content="https://raw.githubusercontent.com/vyctorbrzezowski/codex-switchboard/main/Support/screenshots/expanded-view.png"
+    >
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Codex Switchboard",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS 13+",
+        "description": "Local-first macOS menu bar app for OpenAI Codex quota tracking, multi-account switching, and workspace usage visibility.",
+        "softwareVersion": "1.0.1",
+        "license": "https://github.com/vyctorbrzezowski/codex-switchboard/blob/main/LICENSE",
+        "url": "https://github.com/vyctorbrzezowski/codex-switchboard",
+        "downloadUrl": "https://github.com/vyctorbrzezowski/codex-switchboard/releases",
+        "author": {
+          "@type": "Person",
+          "name": "Vyctor Brzezowski"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f6f2;
+        --ink: #1c1b18;
+        --muted: #68645b;
+        --line: #d8d3c7;
+        --panel: #ffffff;
+        --accent: #c44722;
+        --accent-ink: #ffffff;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141411;
+          --ink: #f3efe6;
+          --muted: #b9b0a1;
+          --line: #333028;
+          --panel: #1e1d19;
+          --accent: #f06f43;
+          --accent-ink: #1c100b;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .page {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+      }
+
+      header {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        align-items: center;
+        padding: 24px 0;
+      }
+
+      .brand {
+        font-weight: 700;
+      }
+
+      nav {
+        display: flex;
+        gap: 16px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+        gap: 48px;
+        align-items: center;
+        padding: 48px 0 56px;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin: 0;
+        font-size: clamp(44px, 8vw, 78px);
+        line-height: 0.95;
+      }
+
+      .lede {
+        max-width: 660px;
+        margin: 24px 0 0;
+        color: var(--muted);
+        font-size: 20px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 0 16px;
+        text-decoration: none;
+        font-weight: 650;
+      }
+
+      .button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+
+      .shot {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: 0 24px 80px rgb(0 0 0 / 14%);
+      }
+
+      .facts,
+      .faq {
+        display: grid;
+        gap: 16px;
+        padding: 32px 0 56px;
+      }
+
+      .facts {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .fact,
+      .qa {
+        border-top: 1px solid var(--line);
+        padding-top: 16px;
+      }
+
+      .fact strong,
+      .qa strong {
+        display: block;
+        margin-bottom: 8px;
+      }
+
+      .fact p,
+      .qa p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      footer {
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        padding: 24px 0 40px;
+        font-size: 14px;
+      }
+
+      @media (max-width: 820px) {
+        header,
+        nav,
+        .hero,
+        .facts {
+          grid-template-columns: 1fr;
+        }
+
+        header {
+          align-items: flex-start;
+        }
+
+        nav {
+          flex-wrap: wrap;
+        }
+
+        .hero {
+          gap: 32px;
+          padding-top: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <a class="brand" href="https://github.com/vyctorbrzezowski/codex-switchboard">Codex Switchboard</a>
+        <nav aria-label="Primary">
+          <a href="https://github.com/vyctorbrzezowski/codex-switchboard/releases">Releases</a>
+          <a href="https://github.com/vyctorbrzezowski/codex-switchboard#data--privacy">Privacy</a>
+          <a href="https://github.com/vyctorbrzezowski/codex-switchboard#faq">FAQ</a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div>
+            <h1>macOS Codex quota tracking and account switching.</h1>
+            <p class="lede">
+              Codex Switchboard keeps OpenAI Codex usage, reset timing, active accounts, and workspaces visible from your Mac menu bar. It is local-first and built for manual control.
+            </p>
+            <div class="actions">
+              <a class="button primary" href="https://github.com/vyctorbrzezowski/codex-switchboard/releases">Download for macOS</a>
+              <a class="button" href="https://github.com/vyctorbrzezowski/codex-switchboard">View source</a>
+            </div>
+          </div>
+          <img
+            class="shot"
+            src="https://raw.githubusercontent.com/vyctorbrzezowski/codex-switchboard/main/Support/screenshots/expanded-view.png"
+            alt="Codex Switchboard expanded macOS menu bar view showing Codex usage, reset windows, and account switching"
+          >
+        </section>
+
+        <section class="facts" aria-label="Capabilities">
+          <div class="fact">
+            <strong>Quota visibility</strong>
+            <p>Best-effort Codex usage and reset timing across linked local accounts.</p>
+          </div>
+          <div class="fact">
+            <strong>Account switching</strong>
+            <p>Switch the active local Codex account only when you choose to.</p>
+          </div>
+          <div class="fact">
+            <strong>Workspace grouping</strong>
+            <p>Group accounts by team or workspace so daily usage is easier to scan.</p>
+          </div>
+          <div class="fact">
+            <strong>Local-first privacy</strong>
+            <p>No token sync, no cloud account service, and sensitive files use owner-only permissions.</p>
+          </div>
+        </section>
+
+        <section class="faq" aria-label="FAQ">
+          <div class="qa">
+            <strong>Does Codex Switchboard work with OpenAI Codex?</strong>
+            <p>Yes. It is built for local OpenAI Codex usage visibility and manual account switching on macOS.</p>
+          </div>
+          <div class="qa">
+            <strong>Does it upload tokens or account data?</strong>
+            <p>No. Tokens and usage snapshots stay on the local Mac.</p>
+          </div>
+          <div class="qa">
+            <strong>Is account switching automatic?</strong>
+            <p>No. Codex Switchboard does not automate account cycling or change Codex limits.</p>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        Codex Switchboard is not affiliated with OpenAI. MIT licensed.
+      </footer>
+    </div>
+  </body>
+</html>
