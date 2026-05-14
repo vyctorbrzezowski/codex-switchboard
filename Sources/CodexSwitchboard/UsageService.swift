@@ -69,7 +69,8 @@ final class UsageService: Sendable {
         var seenEmails = Set<String>()
 
         for key in validKeys {
-            guard let p = profiles[key], let usage = usages[key] else { continue }
+            guard let p = profiles[key] else { continue }
+            let usage = usages[key] ?? [:]
 
             let email = (p["email"]     as? String)
                      ?? (usage["email"] as? String)
@@ -77,7 +78,7 @@ final class UsageService: Sendable {
                      ?? key.components(separatedBy: ":").last ?? key
 
             let aid = (usage["account_id"] as? String) ?? (p["accountId"] as? String) ?? ""
-            let dedup = "\(email.lowercased())|\(aid)"
+            let dedup = Self.dedupID(email: email, accountID: aid, profileKey: key)
             guard !seenEmails.contains(dedup) else { continue }
             seenEmails.insert(dedup)
 
@@ -142,6 +143,10 @@ final class UsageService: Sendable {
     }
 
     // MARK: - Private Helpers
+
+    static func dedupID(email: String, accountID: String, profileKey: String) -> String {
+        "\(email.lowercased())|\(accountID.isEmpty ? profileKey : accountID)"
+    }
 
     private func fetchUsage(token: String) async -> [String: Any] {
         await apiGet("/backend-api/codex/usage", token: token)
@@ -249,6 +254,10 @@ final class UsageService: Sendable {
     }
 
     private func usageErrorMessage(from data: [String: Any]) -> String? {
+        if let status = data["http_status"] as? Int, status == 401 {
+            return "Expired or revoked"
+        }
+
         if let detail = data["detail"] as? [String: Any],
            let code = detail["code"] as? String,
            !code.isEmpty {
@@ -273,6 +282,10 @@ final class UsageService: Sendable {
         }
 
         return nil
+    }
+
+    static func isExpiredOrRevokedAuthError(_ message: String?) -> Bool {
+        message == "Expired or revoked"
     }
 
     private func readableAPIError(from data: [String: Any]) -> String? {

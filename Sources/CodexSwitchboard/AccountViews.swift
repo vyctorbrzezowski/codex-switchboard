@@ -311,6 +311,8 @@ struct AccountCompactRow: View {
                     sessionMetricGroup(layout: layout)
                     weeklyMetricGroup(layout: layout)
                     planCycleText(width: layout.planCycleWidth)
+                } else if account.hasError {
+                    compactErrorStatus(width: layout.metricWidth * 2 + layout.spacing)
                 } else {
                     Group {
                         if !exhausted {
@@ -485,15 +487,8 @@ struct AccountCompactRow: View {
                 .buttonStyle(.plain)
                 .help("Cancel")
             } else if needsRelogin {
-                Button(action: relogin) {
-                    Image(systemName: "arrow.clockwise.circle")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color(hex: "FF9F0A"))
-                        .frame(width: 16, height: 16)
-                }
-                .buttonStyle(.plain)
+                ReloginAccountButton(action: relogin)
                 .disabled(isReloginBlocked)
-                .help("Re-login")
             } else if isSwitchingToCodex {
                 ProgressView()
                     .controlSize(.mini)
@@ -508,6 +503,33 @@ struct AccountCompactRow: View {
             }
         }
         .frame(width: width, height: 18)
+    }
+}
+
+struct ReloginAccountButton: View {
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.clockwise.circle")
+                    .font(.system(size: 8, weight: .semibold))
+                Text("Re-login")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundStyle(Color(hex: "FF9F0A").opacity(hovered ? 1 : 0.88))
+            .frame(width: 86, height: 18)
+            .background(hovered ? .thinMaterial : .ultraThinMaterial)
+            .clipShape(Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(Color(hex: "FF9F0A").opacity(hovered ? 0.36 : 0.22), lineWidth: 0.6)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .help("Re-login")
     }
 }
 
@@ -558,6 +580,21 @@ struct CodexIconView: View {
 }
 
 private extension AccountCompactRow {
+    func compactErrorStatus(width: CGFloat) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(Color(hex: "FF453A"))
+            Text(account.errorMessage ?? "Invalid account")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(Color(hex: "FF453A"))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(width: width, alignment: .trailing)
+        .help(account.errorMessage ?? "Invalid account")
+    }
+
     func compactQuota(label: String, pct: Double, gray: Bool, width: CGFloat) -> some View {
         HStack(spacing: 4) {
             Text(label)

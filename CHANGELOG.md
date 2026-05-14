@@ -2,6 +2,12 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.2 - 2026-05-14
+
+- Fixed an account list bug where accounts with failed or unavailable usage responses could disappear from the menu bar list.
+- Kept errored accounts visible with their error/re-login state instead of filtering them out of search and list sections.
+- Labeled expired/revoked auth errors as `Expired or revoked` and made the `Re-login` action persistent for those accounts.
+
 ## 1.0.1 - 2026-05-12
 
 - Improved account capture responsiveness by saving new OAuth accounts from local token identity without making an extra workspace metadata call in the post-login path.

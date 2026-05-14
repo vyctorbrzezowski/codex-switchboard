@@ -62,7 +62,11 @@ final class UsageViewModel: ObservableObject {
     // MARK: - Derived Lists
 
     private var visibleAccounts: [Account] {
-        accounts.filter { !$0.hasError }
+        Self.visibleAccounts(from: accounts)
+    }
+
+    static func visibleAccounts(from accounts: [Account]) -> [Account] {
+        accounts
     }
 
     private var searchFiltered: [Account] {
@@ -147,7 +151,11 @@ final class UsageViewModel: ObservableObject {
         return order.map { ($0, map[$0]!) }
     }
 
-    var errorsCount: Int { 0 }
+    var errorsCount: Int { Self.errorCount(in: accounts) }
+
+    static func errorCount(in accounts: [Account]) -> Int {
+        accounts.filter(\.hasError).count
+    }
 
     // MARK: - Actions
 
@@ -202,6 +210,7 @@ final class UsageViewModel: ObservableObject {
 
     func needsRelogin(_ account: Account) -> Bool {
         !codexLoginStatus.contains(account)
+            || UsageService.isExpiredOrRevokedAuthError(account.errorMessage)
     }
 
     func isRelogging(_ account: Account) -> Bool {
