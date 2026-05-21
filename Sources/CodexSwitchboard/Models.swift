@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Account
@@ -28,6 +29,39 @@ struct Account: Identifiable, Equatable, Codable {
 
     /// Weekly quota fully used; session line is hidden and cell uses exhausted styling.
     var isWeeklyExhausted: Bool { hasError || weeklyFree <= 0.001 }
+
+    var isFreePlan: Bool {
+        plan.codexSwitchboardNormalized == "free"
+    }
+
+    var isFreeWaitingForReset: Bool {
+        !hasError
+            && isFreePlan
+            && sessionFree <= 0.001
+            && weeklyFree > 0.001
+            && freePlanResetSeconds > 0
+    }
+
+    var freePlanResetSeconds: Double {
+        if sessionResetSeconds > 0 { return sessionResetSeconds }
+        return weeklyResetSeconds
+    }
+
+    var nextWaitingResetSeconds: Double {
+        if sessionFree <= 0.001, sessionResetSeconds > 0 {
+            return sessionResetSeconds
+        }
+        if weeklyFree <= 0.001, weeklyResetSeconds > 0 {
+            return weeklyResetSeconds
+        }
+        if weeklyResetSeconds > 0 {
+            return weeklyResetSeconds
+        }
+        if sessionResetSeconds > 0 {
+            return sessionResetSeconds
+        }
+        return Double.greatestFiniteMagnitude
+    }
 
     var isUsableForCodex: Bool {
         !hasError && sessionFree > 0.001 && weeklyFree > 0.001
@@ -96,7 +130,7 @@ struct Theme {
     static func barColor(for pct: Double) -> Color {
         switch pct {
         case 50...:       return Color(hex: "30D158")   // green
-        case 20..<50:     return Color(hex: "FFD60A")   // yellow
+        case 20..<50:     return Color(lightHex: "8A6A00", darkHex: "FFD60A")   // yellow
         case 5..<20:      return Color(hex: "FF9F0A")   // orange
         case 0.001..<5:   return Color(hex: "FF453A")   // red
         default:          return Color(hex: "8E8E93")   // gray (0 %)
@@ -130,6 +164,13 @@ struct Theme {
 // MARK: - Color Helper
 
 extension Color {
+    init(lightHex: String, darkHex: String) {
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? darkHex : lightHex)
+        })
+    }
+
     init(hex: String) {
         let h = hex.trimmingCharacters(in: .alphanumerics.inverted)
         var n: UInt64 = 0
@@ -145,6 +186,24 @@ extension Color {
                   green:   Double(g) / 255,
                   blue:    Double(b) / 255,
                   opacity: Double(a) / 255)
+    }
+}
+
+private extension NSColor {
+    convenience init(hex: String) {
+        let h = hex.trimmingCharacters(in: .alphanumerics.inverted)
+        var n: UInt64 = 0
+        Scanner(string: h).scanHexInt64(&n)
+        let r, g, b, a: UInt64
+        switch h.count {
+        case 6: (a, r, g, b) = (255, n >> 16, n >> 8 & 0xFF, n & 0xFF)
+        case 8: (a, r, g, b) = (n >> 24, n >> 16 & 0xFF, n >> 8 & 0xFF, n & 0xFF)
+        default: (a, r, g, b) = (255, 0, 0, 0)
+        }
+        self.init(srgbRed: Double(r) / 255,
+                  green:   Double(g) / 255,
+                  blue:    Double(b) / 255,
+                  alpha:   Double(a) / 255)
     }
 }
 
@@ -176,6 +235,17 @@ struct ResetFormatter {
         return dateTimeString(target: tgt, now: now, time: t)
     }
 
+    static func formatFreeReturn(seconds: Double) -> String {
+        guard seconds > 0 else { return "now" }
+        let now = Date()
+        let tgt = now.addingTimeInterval(seconds)
+        let cal = Calendar.current
+        let t = hhmm(tgt)
+        if cal.isDateInToday(tgt) { return "today \(t)" }
+        if cal.isDateInTomorrow(tgt) { return "tomorrow \(t)" }
+        return dateTimeString(target: tgt, now: now, time: t)
+    }
+
     static func timeOnly(seconds: Double) -> String {
         guard seconds > 0 else { return "now" }
         return hhmm(Date().addingTimeInterval(seconds))
@@ -196,15 +266,19 @@ struct ResetFormatter {
     }
 
     private static func dateTimeString(target: Date, now: Date, time: String) -> String {
+        "\(dateString(target: target, now: now)) \(time)"
+    }
+
+    private static func dateString(target: Date, now: Date) -> String {
         let cal = Calendar.current
         let d = cal.component(.day, from: target)
         let m = cal.component(.month, from: target)
         let y = cal.component(.year, from: target)
         let yNow = cal.component(.year, from: now)
         if y == yNow {
-            return String(format: "%02d/%02d %@", d, m, time)
+            return String(format: "%02d/%02d", d, m)
         }
-        return String(format: "%02d/%02d/%d %@", d, m, y, time)
+        return String(format: "%02d/%02d/%d", d, m, y)
     }
 
     /// Full tooltip string.

@@ -30,6 +30,8 @@ final class UsageViewModel: ObservableObject {
     @Published var listDensity: ListDensity = .compact {
         didSet { UserDefaults.standard.set(listDensity.rawValue, forKey: "listDensity") }
     }
+    @Published var waitingForResetCollapsed = false
+    @Published var freeWaitingCollapsed = true
 
     // MARK: - Internals
 
@@ -49,7 +51,12 @@ final class UsageViewModel: ObservableObject {
         if UserDefaults.standard.object(forKey: "groupByWorkspace") != nil {
             groupByWorkspace = UserDefaults.standard.bool(forKey: "groupByWorkspace")
         }
-        informationMode = .focused
+        if let rawMode = UserDefaults.standard.string(forKey: "accountInformationMode"),
+           let savedMode = AccountInformationMode(rawValue: rawMode) {
+            informationMode = savedMode
+        } else {
+            informationMode = .focused
+        }
         listDensity = .compact
         if AccountProfileStore.hasProfiles, let snap = AccountSnapshotStore.load() {
             accounts = snap.accounts
@@ -88,9 +95,24 @@ final class UsageViewModel: ObservableObject {
         return w * urgencyMultiplier * sessionHealthFactor
     }
 
+    static func sortedExhaustedAccounts(_ accounts: [Account]) -> [Account] {
+        accounts.sorted { compareExhausted($0, $1) }
+    }
+
+    private static func exhaustedPlanRank(_ account: Account) -> Int {
+        if account.hasError { return 2 }
+        if account.isFreePlan { return 1 }
+        return 0
+    }
+
     private static func compareExhausted(_ a: Account, _ b: Account) -> Bool {
-        if a.weeklyResetSeconds != b.weeklyResetSeconds {
-            return a.weeklyResetSeconds < b.weeklyResetSeconds
+        let planRankA = exhaustedPlanRank(a)
+        let planRankB = exhaustedPlanRank(b)
+        if planRankA != planRankB {
+            return planRankA < planRankB
+        }
+        if a.nextWaitingResetSeconds != b.nextWaitingResetSeconds {
+            return a.nextWaitingResetSeconds < b.nextWaitingResetSeconds
         }
         return a.email.localizedCaseInsensitiveCompare(b.email) == .orderedAscending
     }
@@ -122,7 +144,15 @@ final class UsageViewModel: ObservableObject {
     }
 
     var exhaustedAccounts: [Account] {
-        searchFiltered.filter { !$0.isUsableForCodex }.sorted { Self.compareExhausted($0, $1) }
+        Self.sortedExhaustedAccounts(searchFiltered.filter { !$0.isUsableForCodex })
+    }
+
+    var nonFreeExhaustedAccounts: [Account] {
+        Self.sortedExhaustedAccounts(searchFiltered.filter { !$0.isUsableForCodex && !$0.isFreeWaitingForReset })
+    }
+
+    var freeWaitingAccounts: [Account] {
+        Self.sortedExhaustedAccounts(searchFiltered.filter(\.isFreeWaitingForReset))
     }
 
     var groupedPriorityAccounts: [(String, [Account])] {
@@ -134,7 +164,7 @@ final class UsageViewModel: ObservableObject {
     }
 
     var groupedExhaustedAccounts: [(String, [Account])] {
-        Self.groupByWorkspace(exhaustedAccounts)
+        Self.groupByWorkspace(nonFreeExhaustedAccounts)
     }
 
     var hasAnyAccount: Bool {
@@ -354,6 +384,14 @@ final class UsageViewModel: ObservableObject {
 
     func toggleInformationMode() {
         informationMode = informationMode == .complete ? .focused : .complete
+    }
+
+    func toggleWaitingForResetCollapsed() {
+        waitingForResetCollapsed.toggle()
+    }
+
+    func toggleFreeWaitingCollapsed() {
+        freeWaitingCollapsed.toggle()
     }
 
     func toggleGroupByWorkspace() { groupByWorkspace.toggle() }

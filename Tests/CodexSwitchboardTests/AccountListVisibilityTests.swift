@@ -33,6 +33,70 @@ final class AccountListVisibilityTests: XCTestCase {
         XCTAssertFalse(UsageService.isExpiredOrRevokedAuthError("Workspace deactivated"))
     }
 
+    func testFreePlanSessionZeroUsesDedicatedResetState() {
+        let account = Account(
+            id: "free@example.com|acc-free",
+            profileKey: "free@example.com",
+            email: "free@example.com",
+            workspace: "free",
+            plan: "free",
+            sessionFree: 0,
+            weeklyFree: 100,
+            sessionResetSeconds: 86_400,
+            weeklyResetSeconds: 0,
+            planRenewalDate: nil,
+            hasError: false,
+            errorMessage: nil
+        )
+
+        XCTAssertTrue(account.isFreeWaitingForReset)
+        XCTAssertFalse(account.isUsableForCodex)
+        XCTAssertEqual(account.freePlanResetSeconds, 86_400)
+    }
+
+    func testFreeResetFormatterIncludesReturnContext() {
+        let text = ResetFormatter.formatFreeReturn(seconds: 60)
+
+        XCTAssertNotEqual(text, ResetFormatter.timeOnly(seconds: 60))
+        XCTAssertTrue(text.contains(" "))
+    }
+
+    @MainActor
+    func testWaitingForResetSortsPaidBeforeFreeThenSoonestReset() {
+        let freeSoon = makeAccount(
+            id: "free-soon@example.com|acc",
+            email: "free-soon@example.com",
+            plan: "free",
+            sessionFree: 0,
+            weeklyFree: 100,
+            sessionResetSeconds: 60
+        )
+        let plusLater = makeAccount(
+            id: "plus-later@example.com|acc",
+            email: "plus-later@example.com",
+            plan: "plus",
+            sessionFree: 0,
+            weeklyFree: 100,
+            sessionResetSeconds: 600
+        )
+        let plusSoon = makeAccount(
+            id: "plus-soon@example.com|acc",
+            email: "plus-soon@example.com",
+            plan: "plus",
+            sessionFree: 0,
+            weeklyFree: 100,
+            sessionResetSeconds: 120
+        )
+
+        let sorted = UsageViewModel.sortedExhaustedAccounts([freeSoon, plusLater, plusSoon])
+
+        XCTAssertEqual(sorted.map(\.email), [
+            "plus-soon@example.com",
+            "plus-later@example.com",
+            "free-soon@example.com"
+        ])
+    }
+
     private func makeAccount(id: String, email: String, hasError: Bool) -> Account {
         Account(
             id: id,
@@ -47,6 +111,31 @@ final class AccountListVisibilityTests: XCTestCase {
             planRenewalDate: nil,
             hasError: hasError,
             errorMessage: hasError ? "Codex usage unavailable" : nil
+        )
+    }
+
+    private func makeAccount(
+        id: String,
+        email: String,
+        plan: String,
+        sessionFree: Double,
+        weeklyFree: Double,
+        sessionResetSeconds: Double,
+        weeklyResetSeconds: Double = 0
+    ) -> Account {
+        Account(
+            id: id,
+            profileKey: id,
+            email: email,
+            workspace: plan,
+            plan: plan,
+            sessionFree: sessionFree,
+            weeklyFree: weeklyFree,
+            sessionResetSeconds: sessionResetSeconds,
+            weeklyResetSeconds: weeklyResetSeconds,
+            planRenewalDate: nil,
+            hasError: false,
+            errorMessage: nil
         )
     }
 }

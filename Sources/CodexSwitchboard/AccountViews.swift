@@ -26,8 +26,13 @@ struct AccountListView: View {
                     }
                 }
                 if !vm.exhaustedAccounts.isEmpty {
-                    ExhaustedSeparatorHeader(count: vm.exhaustedAccounts.count)
-                    rows(vm.exhaustedAccounts)
+                    waitingForResetGroup {
+                        ForEach(vm.groupedExhaustedAccounts, id: \.0) { ws, accs in
+                            SectionHeader(name: ws, count: accs.count)
+                            rows(accs)
+                        }
+                        freeWaitingGroup
+                    }
                 }
             } else {
                 if !vm.priorityAccounts.isEmpty {
@@ -38,9 +43,41 @@ struct AccountListView: View {
                     rows(vm.normalActiveAccounts)
                 }
                 if !vm.exhaustedAccounts.isEmpty {
-                    ExhaustedSeparatorHeader(count: vm.exhaustedAccounts.count)
-                    rows(vm.exhaustedAccounts)
+                    waitingForResetGroup {
+                        rows(vm.nonFreeExhaustedAccounts)
+                        freeWaitingGroup
+                    }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func waitingForResetGroup<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isCollapsed = vm.waitingForResetCollapsed && vm.searchText.isEmpty
+        ExhaustedSeparatorHeader(
+            count: vm.exhaustedAccounts.count,
+            isCollapsed: isCollapsed,
+            toggle: { vm.toggleWaitingForResetCollapsed() }
+        )
+        if !isCollapsed {
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private var freeWaitingGroup: some View {
+        if !vm.freeWaitingAccounts.isEmpty {
+            let isCollapsed = vm.freeWaitingCollapsed && vm.searchText.isEmpty
+            FreeWaitingGroupHeader(
+                count: vm.freeWaitingAccounts.count,
+                isCollapsed: isCollapsed,
+                toggle: { vm.toggleFreeWaitingCollapsed() }
+            )
+            if !isCollapsed {
+                rows(vm.freeWaitingAccounts)
             }
         }
     }
@@ -116,21 +153,60 @@ struct PrioritySeparatorHeader: View {
 
 struct ExhaustedSeparatorHeader: View {
     let count: Int
+    let isCollapsed: Bool
+    let toggle: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "clock")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
-            Text("WAITING FOR RESET (\(count))")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-            Spacer()
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 10)
+                Image(systemName: "clock")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Text("WAITING FOR RESET (\(count))")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(Color.primary.opacity(0.03))
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 12)
-        .frame(height: 28)
-        .background(Color.primary.opacity(0.03))
+        .buttonStyle(.plain)
+        .help(isCollapsed ? "Show waiting accounts" : "Hide waiting accounts")
+    }
+}
+
+struct FreeWaitingGroupHeader: View {
+    let count: Int
+    let isCollapsed: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 10)
+                Text("FREE (\(count))")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+            .background(Color.primary.opacity(0.025))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isCollapsed ? "Show free accounts" : "Hide free accounts")
     }
 }
 
@@ -277,10 +353,14 @@ struct AccountCompactRow: View {
 
     private var exhausted: Bool { account.isWeeklyExhausted }
     private var showsFullInformation: Bool { informationMode == .complete }
-    private var showsActionControl: Bool { needsRelogin || isRelogging || isSwitchingToCodex || (showsCodexControls && !isActiveInCodex) }
+    private var showsActionControl: Bool { needsRelogin || isRelogging || isSwitchingToCodex || canShowSwapControl }
     private var rowHeight: CGFloat { showsFullInformation ? 34 : 28 }
     private var canShowSwapControl: Bool {
-        showsCodexControls && !isActiveInCodex && !needsRelogin && !isRelogging && !exhausted
+        showsCodexControls
+            && !isActiveInCodex
+            && !needsRelogin
+            && !isRelogging
+            && account.isUsableForCodex
     }
 
     var body: some View {
@@ -290,6 +370,9 @@ struct AccountCompactRow: View {
                 showsFullInformation: showsFullInformation,
                 showsActionControl: showsActionControl
             )
+            let freeResetWidth = showsFullInformation
+                ? layout.metricWidth * 2 + layout.sessionResetWidth + layout.weeklyResetWidth + layout.planCycleWidth + layout.spacing * 2 + 4
+                : layout.metricWidth * 2 + layout.spacing
             HStack(alignment: .center, spacing: layout.spacing) {
                 leadingAccountControl
 
@@ -305,26 +388,38 @@ struct AccountCompactRow: View {
                         .frame(width: layout.workspaceWidth, alignment: .leading)
                 }
 
-                accountActionControl(width: layout.actionWidth)
-
-                if showsFullInformation {
-                    sessionMetricGroup(layout: layout)
-                    weeklyMetricGroup(layout: layout)
-                    planCycleText(width: layout.planCycleWidth)
-                } else if account.hasError {
-                    compactErrorStatus(width: layout.metricWidth * 2 + layout.spacing)
-                } else {
-                    Group {
-                        if !exhausted {
-                            compactQuota(label: "S", pct: account.sessionFree, gray: false, width: layout.metricWidth)
-                        } else {
-                            Color.clear.frame(width: layout.metricWidth, height: 1)
-                        }
+                if account.isFreeWaitingForReset {
+                    if showsFullInformation {
+                        accountActionControl(width: layout.actionWidth)
+                        freeResetStatus(width: freeResetWidth, alignment: .leading)
+                    } else if showsActionControl {
+                        accountActionControl(width: layout.actionWidth)
+                        freeResetStatus(width: freeResetWidth, alignment: .trailing)
+                    } else {
+                        freeResetStatus(width: layout.actionWidth + layout.spacing + freeResetWidth, alignment: .trailing)
                     }
-                    .opacity(exhausted ? 0.5 : 1)
+                } else {
+                    accountActionControl(width: layout.actionWidth)
 
-                    compactQuota(label: "W", pct: account.weeklyFree, gray: exhausted, width: layout.metricWidth)
+                    if showsFullInformation {
+                        sessionMetricGroup(layout: layout)
+                        weeklyMetricGroup(layout: layout)
+                        planCycleText(width: layout.planCycleWidth)
+                    } else if account.hasError {
+                        compactErrorStatus(width: layout.metricWidth * 2 + layout.spacing)
+                    } else {
+                        Group {
+                            if !exhausted {
+                                compactQuota(label: "S", pct: account.sessionFree, gray: false, width: layout.metricWidth)
+                            } else {
+                                Color.clear.frame(width: layout.metricWidth, height: 1)
+                            }
+                        }
                         .opacity(exhausted ? 0.5 : 1)
+
+                        compactQuota(label: "W", pct: account.weeklyFree, gray: exhausted, width: layout.metricWidth)
+                            .opacity(exhausted ? 0.5 : 1)
+                    }
                 }
             }
             .padding(.horizontal, CompactRowLayout.horizontalPadding)
@@ -580,6 +675,22 @@ struct CodexIconView: View {
 }
 
 private extension AccountCompactRow {
+    func freeResetStatus(width: CGFloat, alignment: Alignment) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "clock")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(.secondary)
+            Text("Free resets \(ResetFormatter.formatFreeReturn(seconds: account.freePlanResetSeconds))")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .frame(width: width, alignment: alignment)
+        .help("Free quota resets \(ResetFormatter.fullTooltip(seconds: account.freePlanResetSeconds))")
+    }
+
     func compactErrorStatus(width: CGFloat) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "exclamationmark.triangle.fill")

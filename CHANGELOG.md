@@ -2,6 +2,14 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.3 - 2026-05-21
+
+- Added collapsible waiting-for-reset sections, including a dedicated collapsed-by-default free-plan group.
+- Added clearer free-plan reset timing when session quota is depleted but weekly quota remains.
+- Kept the selected compact/expanded information mode across popover opens.
+- Improved exhausted-account ordering so paid accounts surface before free-plan reset waiters, then by soonest reset.
+- Preserved re-login controls for free-plan waiting rows and added coverage for the new reset-state behavior.
+
 ## 1.0.2 - 2026-05-14
 
 - Fixed an account list bug where accounts with failed or unavailable usage responses could disappear from the menu bar list.

@@ -51,6 +51,7 @@ Codex Switchboard automatically re-orders your accounts so the best one to use r
 - **Smart score** — `min(sessionFree, weeklyFree)`; the account with the highest bottlenecked balance wins.
 - **Priority strip** — Accounts with useful balance whose weekly window resets in less than 24 hours get a temporary urgency boost and appear in a dedicated top section.
 - **Exhausted accounts** — Sorted by who resets first, so you know which one will be usable again soonest.
+- **Free reset group** — Free-plan accounts waiting for session reset are grouped separately so daily-use paid/workspace accounts stay easier to scan.
 
 ## Requirements
 

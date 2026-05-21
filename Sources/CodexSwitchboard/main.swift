@@ -57,9 +57,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
     }
 
-    private func resetPopoverToCompactMode() {
-        viewModel.informationMode = .focused
-        let size = preferredContentSize(for: .focused)
+    private func syncPopoverSizeToSelectedMode() {
+        let size = preferredContentSize(for: viewModel.informationMode)
         popover.contentViewController?.preferredContentSize = size
         popover.contentSize = size
     }
@@ -81,7 +80,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(sender)
             removeEventMonitor()
         } else {
-            resetPopoverToCompactMode()
+            syncPopoverSizeToSelectedMode()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
