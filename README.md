@@ -40,6 +40,7 @@
 - **Workspace Grouping** — Accounts organized by team/workspace
 - **Account Health** — Visual indicators for invalid or deactivated accounts
 - **One-Click Switching** — Change your active Codex account instantly
+- **Automatic Token Refresh** — Expired access tokens are refreshed locally when possible before asking you to re-login
 - **Local-First** — All data stays on your machine; no cloud sync
 - **Secure Token Storage** — Sensitive files written with `0600` permissions
 - **Smart Ordering** — Accounts are implicitly ranked by a composite score so the "best account to use now" surfaces to the top

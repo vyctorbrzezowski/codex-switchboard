@@ -2,6 +2,14 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.4 - 2026-05-22
+
+- Added automatic access-token refresh when a Codex usage request returns `401`.
+- Persisted refreshed tokens back to the local account store and captured Codex profiles.
+- Retried usage fetches with the refreshed access token before requiring manual re-login.
+- Showed `Refresh failed - re-login required` when refresh tokens are missing, reused, rejected, or still produce a rejected access token.
+- Distinguished invalidated and revoked tokens from expired tokens so the app does not burn refresh tokens on unrecoverable auth states.
+
 ## 1.0.3 - 2026-05-21
 
 - Added collapsible waiting-for-reset sections, including a dedicated collapsed-by-default free-plan group.

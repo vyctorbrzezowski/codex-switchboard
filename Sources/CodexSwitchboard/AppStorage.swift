@@ -115,6 +115,37 @@ enum AccountProfileStore {
         try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
     }
 
+    static func updateTokens(
+        profileKey: String,
+        email: String,
+        accountID: String,
+        accessToken: String,
+        refreshToken: String,
+        idToken: String?,
+        expiresAt: Int
+    ) throws {
+        var root = accountsRoot()
+        var profiles = root["profiles"] as? [String: Any] ?? [:]
+        var entry = profiles[profileKey] as? [String: Any] ?? [:]
+
+        entry["access"] = accessToken
+        entry["refresh"] = refreshToken
+        entry["expires"] = expiresAt
+        profiles[profileKey] = entry
+        root["profiles"] = profiles
+        try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
+
+        try? updateCapturedProfiles(
+            profileKey: profileKey,
+            email: email,
+            accountID: accountID,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            idToken: idToken,
+            expiresAt: expiresAt
+        )
+    }
+
     static func remove(profileKeys: Set<String>) throws {
         guard !profileKeys.isEmpty else { return }
         var root = accountsRoot()
@@ -212,5 +243,59 @@ enum AccountProfileStore {
             order[group] = keys.filter { $0 != key }
         }
         root["order"] = order
+    }
+
+    private static func updateCapturedProfiles(
+        profileKey: String,
+        email: String,
+        accountID: String,
+        accessToken: String,
+        refreshToken: String,
+        idToken: String?,
+        expiresAt: Int
+    ) throws {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: AppStorage.profilesURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for entryURL in entries {
+            guard entryURL.lastPathComponent != "backups",
+                  (try? entryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                continue
+            }
+
+            let metaURL = entryURL.appendingPathComponent("meta.json")
+            var meta = AppStorage.readJSON(metaURL) ?? [:]
+            let sourceProfileKey = meta["source_profile_key"] as? String
+            let metaEmail = (meta["email"] as? String)?.lowercased()
+            let metaAccountID = meta["account_id"] as? String
+            let matchesSource = sourceProfileKey == profileKey
+            let matchesAccount = metaEmail == email.lowercased()
+                && !accountID.isEmpty
+                && metaAccountID == accountID
+            guard matchesSource || matchesAccount else { continue }
+
+            let authURL = entryURL.appendingPathComponent("auth.json")
+            guard var auth = AppStorage.readJSON(authURL) else { continue }
+            var tokens = auth["tokens"] as? [String: Any] ?? [:]
+            tokens["access_token"] = accessToken
+            tokens["refresh_token"] = refreshToken
+            if let idToken, !idToken.isEmpty {
+                tokens["id_token"] = idToken
+            }
+            if !accountID.isEmpty {
+                tokens["account_id"] = accountID
+            }
+            auth["tokens"] = tokens
+            auth["last_refresh"] = ISO8601DateFormatter.codexSwitchboard.string(from: Date())
+            try AppStorage.writeJSON(auth, to: authURL, permissions: 0o600)
+
+            meta["expires_at"] = expiresAt
+            try AppStorage.writeJSON(meta, to: metaURL, permissions: 0o600)
+        }
     }
 }

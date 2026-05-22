@@ -30,6 +30,9 @@ final class AccountListVisibilityTests: XCTestCase {
 
     func testExpiredOrRevokedAuthError() {
         XCTAssertTrue(UsageService.isExpiredOrRevokedAuthError("Expired or revoked"))
+        XCTAssertTrue(UsageService.isExpiredOrRevokedAuthError("Token invalidated"))
+        XCTAssertTrue(UsageService.isExpiredOrRevokedAuthError("Token revoked"))
+        XCTAssertTrue(UsageService.isExpiredOrRevokedAuthError("Refresh failed - re-login required"))
         XCTAssertFalse(UsageService.isExpiredOrRevokedAuthError("Workspace deactivated"))
     }
 

@@ -5,6 +5,10 @@ final class UsageService: Sendable {
 
     private let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                    + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    private let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+    private let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
+    private let refreshedAccessTokenKey = "__codex_switchboard_access_token"
+    private static let refreshFailedError = "Refresh failed - re-login required"
 
     private struct AccountMetadata: Sendable {
         let workspaceName: String?
@@ -23,8 +27,10 @@ final class UsageService: Sendable {
             of: (String, [String: Any]).self
         ) { group in
             for key in validKeys {
-                if let tok = profiles[key]?["access"] as? String, !tok.isEmpty {
-                    group.addTask { (key, await self.fetchUsage(token: tok)) }
+                if let profile = profiles[key],
+                   let tok = profile["access"] as? String,
+                   !tok.isEmpty {
+                    group.addTask { (key, await self.fetchUsage(profileKey: key, profile: profile)) }
                 }
             }
             var map: [String: [String: Any]] = [:]
@@ -96,7 +102,7 @@ final class UsageService: Sendable {
             var planRenewalDate: Date?
 
             // Retry with the current account token when the real workspace name is unavailable.
-            if let tok = p["access"] as? String,
+            if let tok = accessToken(for: key, profile: p, usages: usages),
                !tok.isEmpty {
                 let metadata = tokenAccountMetadata[tok]?[aid] ?? accountMetadataByID[aid]
                 if let metadata {
@@ -150,6 +156,46 @@ final class UsageService: Sendable {
 
     private func fetchUsage(token: String) async -> [String: Any] {
         await apiGet("/backend-api/codex/usage", token: token)
+    }
+
+    private func fetchUsage(profileKey: String, profile: [String: Any]) async -> [String: Any] {
+        guard let accessToken = profile["access"] as? String,
+              !accessToken.isEmpty else {
+            return ["error": "missing access token"]
+        }
+
+        let first = await fetchUsage(token: accessToken)
+        guard shouldAttemptTokenRefresh(for: first) else {
+            return usage(first, accessToken: accessToken)
+        }
+        guard let refreshToken = profile["refresh"] as? String,
+              !refreshToken.isEmpty else {
+            return tokenRefreshFailedUsage(from: first)
+        }
+
+        guard let refreshed = await refreshAccessToken(refreshToken: refreshToken) else {
+            return tokenRefreshFailedUsage(from: first)
+        }
+
+        do {
+            try AccountProfileStore.updateTokens(
+                profileKey: profileKey,
+                email: (profile["email"] as? String) ?? "",
+                accountID: (profile["accountId"] as? String) ?? "",
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                idToken: refreshed.idToken,
+                expiresAt: Int(refreshed.expiresAt)
+            )
+        } catch {
+            return tokenRefreshFailedUsage(from: first)
+        }
+
+        let retried = await fetchUsage(token: refreshed.accessToken)
+        if (retried["http_status"] as? Int) == 401 {
+            return tokenRefreshFailedUsage(from: retried)
+        }
+        return usage(retried, accessToken: refreshed.accessToken)
     }
 
     private func fetchAccountMetadata(token: String) async -> [String: AccountMetadata] {
@@ -253,9 +299,45 @@ final class UsageService: Sendable {
         return ["error": "parse error"]
     }
 
+    private func refreshAccessToken(refreshToken: String) async -> RefreshedTokenResponse? {
+        var request = URLRequest(url: tokenURL, timeoutInterval: 15)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = FormURLEncoder.data([
+            ("grant_type", "refresh_token"),
+            ("client_id", clientID),
+            ("refresh_token", refreshToken),
+        ])
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else { return nil }
+            let decoded = try JSONDecoder().decode(RefreshedTokenResponse.self, from: data)
+            guard !decoded.accessToken.isEmpty else {
+                return nil
+            }
+            return decoded.withFallbackRefreshToken(refreshToken)
+        } catch {
+            return nil
+        }
+    }
+
+    private func usage(_ usage: [String: Any], accessToken: String) -> [String: Any] {
+        var usage = usage
+        usage[refreshedAccessTokenKey] = accessToken
+        return usage
+    }
+
+    private func tokenRefreshFailedUsage(from usage: [String: Any]) -> [String: Any] {
+        var usage = usage
+        usage["error"] = Self.refreshFailedError
+        return usage
+    }
+
     private func usageErrorMessage(from data: [String: Any]) -> String? {
-        if let status = data["http_status"] as? Int, status == 401 {
-            return "Expired or revoked"
+        if let error = data["error"] as? String, error == Self.refreshFailedError {
+            return error
         }
 
         if let detail = data["detail"] as? [String: Any],
@@ -267,6 +349,25 @@ final class UsageService: Sendable {
             default:
                 return code.replacingOccurrences(of: "_", with: " ")
             }
+        }
+
+        if let apiError = data["error"] as? [String: Any],
+           let code = apiError["code"] as? String,
+           !code.isEmpty {
+            switch code {
+            case "token_expired":
+                return "Expired or revoked"
+            case "token_invalidated":
+                return "Token invalidated"
+            case "token_revoked":
+                return "Token revoked"
+            default:
+                return code.replacingOccurrences(of: "_", with: " ")
+            }
+        }
+
+        if let status = data["http_status"] as? Int, status == 401 {
+            return "Expired or revoked"
         }
 
         if let error = data["error"] as? String, !error.isEmpty {
@@ -286,6 +387,9 @@ final class UsageService: Sendable {
 
     static func isExpiredOrRevokedAuthError(_ message: String?) -> Bool {
         message == "Expired or revoked"
+            || message == "Token invalidated"
+            || message == "Token revoked"
+            || message == refreshFailedError
     }
 
     private func readableAPIError(from data: [String: Any]) -> String? {
@@ -297,10 +401,27 @@ final class UsageService: Sendable {
         if let detail = data["detail"] as? String, !detail.isEmpty {
             return detail
         }
+        if let error = data["error"] as? [String: Any] {
+            if let message = error["message"] as? String, !message.isEmpty {
+                return message
+            }
+            if let code = error["code"] as? String, !code.isEmpty {
+                return code
+            }
+        }
         if let message = data["message"] as? String, !message.isEmpty {
             return message
         }
         return nil
+    }
+
+    private func shouldAttemptTokenRefresh(for data: [String: Any]) -> Bool {
+        guard (data["http_status"] as? Int) == 401 else { return false }
+        if let apiError = data["error"] as? [String: Any],
+           let code = apiError["code"] as? String {
+            return code == "token_expired"
+        }
+        return true
     }
 
     private func accountMetadataTokens(
@@ -315,7 +436,7 @@ final class UsageService: Sendable {
                   let usage = usages[key] else { continue }
 
             if usage["error"] == nil,
-               let token = profile["access"] as? String,
+               let token = accessToken(for: key, profile: profile, usages: usages),
                !token.isEmpty {
                 tokens.insert(token)
             }
@@ -354,6 +475,14 @@ final class UsageService: Sendable {
         let planType = (usage["plan_type"] as? String) ?? (profile["plan"] as? String)
         let trimmed = planType?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == true ? nil : trimmed
+    }
+
+    private func accessToken(
+        for key: String,
+        profile: [String: Any],
+        usages: [String: [String: Any]]
+    ) -> String? {
+        (usages[key]?[refreshedAccessTokenKey] as? String) ?? (profile["access"] as? String)
     }
 
     private func shouldUseWorkspaceName(planType: String?, accountID: String) -> Bool {
@@ -407,5 +536,70 @@ final class UsageService: Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
+    }()
+}
+
+private struct RefreshedTokenResponse: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let idToken: String?
+    let expiresAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case idToken = "id_token"
+        case expiresIn = "expires_in"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accessToken = try container.decode(String.self, forKey: .accessToken)
+        refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? ""
+        idToken = try container.decodeIfPresent(String.self, forKey: .idToken)
+        let expiresIn = try container.decode(Double.self, forKey: .expiresIn)
+        expiresAt = Date().timeIntervalSince1970 * 1000 + expiresIn * 1000
+    }
+
+    private init(accessToken: String, refreshToken: String, idToken: String?, expiresAt: Double) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.idToken = idToken
+        self.expiresAt = expiresAt
+    }
+
+    func withFallbackRefreshToken(_ fallback: String) -> RefreshedTokenResponse {
+        guard refreshToken.isEmpty else { return self }
+        return RefreshedTokenResponse(
+            accessToken: accessToken,
+            refreshToken: fallback,
+            idToken: idToken,
+            expiresAt: expiresAt
+        )
+    }
+}
+
+private enum FormURLEncoder {
+    static func data(_ pairs: [(String, String)]) -> Data? {
+        pairs
+            .map { key, value in
+                "\(key.urlFormEncoded)=\(value.urlFormEncoded)"
+            }
+            .joined(separator: "&")
+            .data(using: .utf8)
+    }
+}
+
+private extension String {
+    var urlFormEncoded: String {
+        addingPercentEncoding(withAllowedCharacters: .codexSwitchboardFormAllowed) ?? self
+    }
+}
+
+private extension CharacterSet {
+    static let codexSwitchboardFormAllowed: CharacterSet = {
+        var set = CharacterSet.urlQueryAllowed
+        set.remove(charactersIn: ":#[]@!$&'()*+,;=")
+        return set
     }()
 }
