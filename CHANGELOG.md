@@ -2,6 +2,12 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.5 - 2026-05-27
+
+- Disabled background OAuth token refresh during usage updates so Codex Switchboard does not rotate refresh tokens while Codex sessions are active.
+- Kept expired accounts visible with their re-login state instead of trying to repair them silently.
+- Added an OpenAI `login_hint` for targeted re-login flows so the selected account email can be prefilled by the auth page.
+
 ## 1.0.4 - 2026-05-22
 
 - Added automatic access-token refresh when a Codex usage request returns `401`.

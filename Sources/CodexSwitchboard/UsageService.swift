@@ -7,6 +7,7 @@ final class UsageService: Sendable {
                    + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     private let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
     private let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
+    private let automaticTokenRefreshEnabled = false
     private let refreshedAccessTokenKey = "__codex_switchboard_access_token"
     private static let refreshFailedError = "Refresh failed - re-login required"
 
@@ -166,6 +167,9 @@ final class UsageService: Sendable {
 
         let first = await fetchUsage(token: accessToken)
         guard shouldAttemptTokenRefresh(for: first) else {
+            return usage(first, accessToken: accessToken)
+        }
+        guard automaticTokenRefreshEnabled else {
             return usage(first, accessToken: accessToken)
         }
         guard let refreshToken = profile["refresh"] as? String,

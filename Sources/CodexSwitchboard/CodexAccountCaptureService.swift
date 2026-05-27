@@ -126,7 +126,11 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         let callbackServer = try OAuthCallbackServer(state: state)
         defer { callbackServer.close() }
 
-        let loginURL = makeAuthorizationURL(challenge: challenge, state: state)
+        let loginURL = makeAuthorizationURL(
+            challenge: challenge,
+            state: state,
+            loginHint: target.email
+        )
         let opened = await MainActor.run {
             NSWorkspace.shared.open(loginURL)
         }
@@ -177,9 +181,9 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         )
     }
 
-    private func makeAuthorizationURL(challenge: String, state: String) -> URL {
+    private func makeAuthorizationURL(challenge: String, state: String, loginHint: String? = nil) -> URL {
         var components = URLComponents(url: authorizeURL, resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientID),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
@@ -192,6 +196,11 @@ final class CodexAccountCaptureService: @unchecked Sendable {
             URLQueryItem(name: "originator", value: "codex_cli_rs"),
             URLQueryItem(name: "prompt", value: "login"),
         ]
+        if let loginHint = loginHint?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !loginHint.isEmpty {
+            queryItems.append(URLQueryItem(name: "login_hint", value: loginHint))
+        }
+        components.queryItems = queryItems
         return components.url!
     }
 
