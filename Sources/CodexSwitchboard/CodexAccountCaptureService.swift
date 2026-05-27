@@ -1116,11 +1116,9 @@ private final class OAuthCallbackServer: @unchecked Sendable {
     }
 
     private func handle(_ connection: NWConnection) {
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
-            guard let self, let connection else { return }
+        connection.stateUpdateHandler = { [weak connection] state in
+            guard let connection else { return }
             switch state {
-            case .ready:
-                self.receiveRequest(on: connection)
             case .failed, .cancelled:
                 connection.cancel()
             default:
@@ -1128,17 +1126,41 @@ private final class OAuthCallbackServer: @unchecked Sendable {
             }
         }
         connection.start(queue: queue)
+        receiveRequest(on: connection, buffer: Data())
+        queue.asyncAfter(deadline: .now() + 8) { [weak connection] in
+            connection?.cancel()
+        }
     }
 
-    private func receiveRequest(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
+    private func receiveRequest(on connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
-            guard let data,
-                  let request = String(data: data, encoding: .utf8) else {
+            guard error == nil else {
                 self.respond(connection, status: 400, body: "Bad request")
                 return
             }
-            self.handleRequest(request, connection: connection)
+
+            var nextBuffer = buffer
+            if let data, !data.isEmpty {
+                nextBuffer.append(data)
+            }
+
+            if let headerEnd = nextBuffer.range(of: Data("\r\n\r\n".utf8)) {
+                let headerData = nextBuffer[..<headerEnd.lowerBound]
+                guard let request = String(data: headerData, encoding: .utf8) else {
+                    self.respond(connection, status: 400, body: "Bad request")
+                    return
+                }
+                self.handleRequest(request, connection: connection)
+                return
+            }
+
+            guard !isComplete, nextBuffer.count < 64 * 1024 else {
+                self.respond(connection, status: 400, body: "Bad request")
+                return
+            }
+
+            self.receiveRequest(on: connection, buffer: nextBuffer)
         }
     }
 

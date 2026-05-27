@@ -2,6 +2,11 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.6 - 2026-05-27
+
+- Fixed targeted re-login getting stuck after the ChatGPT consent screen by making the local OAuth callback server read and respond to the browser callback immediately.
+- Kept usage refresh out of the login callback path so account capture can finish before balance checks run in the background.
+
 ## 1.0.5 - 2026-05-27
 
 - Disabled background OAuth token refresh during usage updates so Codex Switchboard does not rotate refresh tokens while Codex sessions are active.
