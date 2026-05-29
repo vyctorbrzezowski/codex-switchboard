@@ -336,7 +336,7 @@ final class UsageViewModel: ObservableObject {
 
         switchTask = Task.detached { [switchService] in
             do {
-                let result = try switchService.switchToAccount(account)
+                let result = try await switchService.switchToAccount(account)
                 await MainActor.run {
                     self.activeCodexProfileKey = result.sourceProfileKey
                     self.switchingAccountID = nil

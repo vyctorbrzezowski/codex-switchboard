@@ -2,6 +2,13 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.7 - 2026-05-29
+
+- Added a Codex auth mirror that keeps captured profiles fresh when `~/.codex/auth.json` changes after Codex or ChatGPT rotates tokens.
+- Synced the live Codex auth back into its matching captured profile before switching accounts so rotated refresh tokens are not lost.
+- Refreshed stale captured auth just-in-time during `Use in Codex`, then copied the fresh auth and restarted Codex/app-server so the running session does not keep an old token in memory.
+- Skipped token mirroring when no saved profile matches the live identity or when multiple profiles match ambiguously.
+
 ## 1.0.6 - 2026-05-27
 
 - Fixed targeted re-login getting stuck after the ChatGPT consent screen by making the local OAuth callback server read and respond to the browser callback immediately.

@@ -843,6 +843,8 @@ enum CodexAccountSwitchError: LocalizedError {
     case capturedProfileMissing(String)
     case capturedProfileAmbiguous(String)
     case codexDidNotQuit
+    case tokenRefreshFailed(Int)
+    case invalidTokenResponse
 
     var errorDescription: String? {
         switch self {
@@ -854,6 +856,10 @@ enum CodexAccountSwitchError: LocalizedError {
             return "More than one captured auth matches \(email)."
         case .codexDidNotQuit:
             return "Codex did not quit; switch canceled."
+        case let .tokenRefreshFailed(status):
+            return "Saved auth could not be refreshed before switching (\(status)); re-login is required."
+        case .invalidTokenResponse:
+            return "Saved auth refresh returned an invalid token response; re-login is required."
         }
     }
 }
@@ -863,6 +869,9 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     private let homeURL = FileManager.default.homeDirectoryForCurrentUser
     private let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
     private let codexBundleIdentifier = "com.openai.codex"
+    private let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+    private let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
+    private let authMirrorService = CodexAuthMirrorService()
 
     private var profileStoreURL: URL {
         AppStorage.profilesURL
@@ -872,21 +881,46 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         homeURL.appendingPathComponent(".codex/auth.json")
     }
 
+    private var bundledCodexURL: URL {
+        appURL.appendingPathComponent("Contents/Resources/codex")
+    }
+
     var isCodexInstalled: Bool {
         fileManager.fileExists(atPath: appURL.path)
             || !NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).isEmpty
     }
 
-    func switchToAccount(_ account: Account) throws -> CodexSwitchResult {
+    func switchToAccount(_ account: Account) async throws -> CodexSwitchResult {
         guard isCodexInstalled else {
             throw CodexAccountSwitchError.codexAppMissing
         }
 
-        let profile = try capturedProfile(for: account)
+        let profile = try CodexAuthFileLock.withLock {
+            authMirrorService.syncActiveAuth()
+            return try capturedProfile(for: account)
+        }
+
+        var didTerminateCodex = false
+        var didLaunchCodex = false
+        defer {
+            if didTerminateCodex && !didLaunchCodex {
+                try? launchCodex()
+            }
+        }
+
         try terminateCodex()
-        try copyReplacing(source: profile.authURL, destination: defaultAuthURL)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultAuthURL.path)
+        didTerminateCodex = true
+        let refreshedAuth = try await refreshedCapturedAuthIfNeeded(profile)
+        try CodexAuthFileLock.withLock {
+            if let refreshedAuth {
+                try apply(refreshedAuth, to: profile)
+            }
+            try copyReplacing(source: profile.authURL, destination: defaultAuthURL)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultAuthURL.path)
+        }
+        restartAppServerDaemonBestEffort()
         try launchCodex()
+        didLaunchCodex = true
 
         return CodexSwitchResult(
             profileName: profile.name,
@@ -953,11 +987,118 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             return CapturedCodexProfile(
                 name: entry.lastPathComponent,
                 authURL: authURL,
+                metaURL: metaURL,
                 email: email ?? "",
                 accountID: accountID ?? "",
                 sourceProfileKey: meta["source_profile_key"] as? String
             )
         }
+    }
+
+    private func refreshedCapturedAuthIfNeeded(_ profile: CapturedCodexProfile) async throws -> RefreshedCapturedAuth? {
+        guard let auth = StoredCodexAuth.load(from: profile.authURL),
+              auth.accessExpiresAt > 0,
+              auth.accessExpiresAt <= Int(Date().addingTimeInterval(300).timeIntervalSince1970 * 1000) else {
+            return nil
+        }
+
+        let refreshed = try await refreshTokens(currentAuth: auth)
+        let identity = try identity(from: refreshed.idToken)
+        if !profile.email.isEmpty, identity.email != profile.email {
+            throw CodexAccountSwitchError.invalidTokenResponse
+        }
+        if !profile.accountID.isEmpty, identity.accountID != profile.accountID {
+            throw CodexAccountSwitchError.invalidTokenResponse
+        }
+
+        return RefreshedCapturedAuth(tokenResponse: refreshed, identity: identity)
+    }
+
+    private func apply(_ refreshedAuth: RefreshedCapturedAuth, to profile: CapturedCodexProfile) throws {
+        let tokenResponse = refreshedAuth.tokenResponse
+        let identity = refreshedAuth.identity
+        let payload: [String: Any] = [
+            "OPENAI_API_KEY": NSNull(),
+            "auth_mode": "chatgpt",
+            "last_refresh": ISO8601DateFormatter.codexSwitchboard.string(from: Date()),
+            "tokens": [
+                "id_token": tokenResponse.idToken,
+                "access_token": tokenResponse.accessToken,
+                "refresh_token": tokenResponse.refreshToken,
+                "account_id": identity.accountID,
+            ],
+        ]
+        try AppStorage.writeJSON(payload, to: profile.authURL, permissions: 0o600)
+
+        var meta = readJSONObject(profile.metaURL) ?? [:]
+        meta["email"] = identity.email
+        meta["account_id"] = identity.accountID
+        meta["expires_at"] = Int(tokenResponse.expiresAt)
+        try AppStorage.writeJSON(meta, to: profile.metaURL, permissions: 0o600)
+
+        if let sourceProfileKey = profile.sourceProfileKey, !sourceProfileKey.isEmpty {
+            try AccountProfileStore.updateTokens(
+                profileKey: sourceProfileKey,
+                email: identity.email,
+                accountID: identity.accountID,
+                accessToken: tokenResponse.accessToken,
+                refreshToken: tokenResponse.refreshToken,
+                idToken: tokenResponse.idToken,
+                expiresAt: Int(tokenResponse.expiresAt)
+            )
+        }
+    }
+
+    private func refreshTokens(currentAuth: StoredCodexAuth) async throws -> OAuthTokenResponse {
+        var request = URLRequest(url: tokenURL, timeoutInterval: 15)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = URLSearchParams([
+            ("grant_type", "refresh_token"),
+            ("client_id", clientID),
+            ("refresh_token", currentAuth.refreshToken),
+        ]).data(using: .utf8)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            throw CodexAccountSwitchError.tokenRefreshFailed(status)
+        }
+
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = object["access_token"] as? String,
+              !accessToken.isEmpty else {
+            throw CodexAccountSwitchError.invalidTokenResponse
+        }
+        let refreshToken = (object["refresh_token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? currentAuth.refreshToken
+        let idToken = (object["id_token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? currentAuth.idToken
+        let expiresIn = object["expires_in"] as? Double ?? 3600
+        return OAuthTokenResponse(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            idToken: idToken,
+            expiresAt: Date().timeIntervalSince1970 * 1000 + expiresIn * 1000
+        )
+    }
+
+    private func identity(from idToken: String) throws -> CapturedIdentity {
+        let parts = idToken.split(separator: ".")
+        guard parts.count >= 2,
+              let payloadData = Data(base64URLString: String(parts[1])),
+              let payload = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+              let email = (payload["email"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(),
+              !email.isEmpty,
+              let auth = payload["https://api.openai.com/auth"] as? [String: Any],
+              let accountIDValue = (auth["chatgpt_account_id"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !accountIDValue.isEmpty else {
+            throw CodexAccountSwitchError.invalidTokenResponse
+        }
+        return CapturedIdentity(email: email, accountID: accountIDValue)
     }
 
     private func terminateCodex() throws {
@@ -984,6 +1125,19 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
     private func launchCodex() throws {
         try run("/usr/bin/open", ["-n", appURL.path])
+    }
+
+    private func restartAppServerDaemonBestEffort() {
+        guard fileManager.isExecutableFile(atPath: bundledCodexURL.path) else { return }
+        if (try? run(bundledCodexURL.path, ["app-server", "daemon", "restart"])) != nil {
+            return
+        }
+        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "bootstrap"])
+        if (try? run(bundledCodexURL.path, ["app-server", "daemon", "restart"])) != nil {
+            return
+        }
+        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "stop"])
+        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "start"])
     }
 
     private func copyReplacing(source: URL, destination: URL) throws {
@@ -1034,9 +1188,15 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 private struct CapturedCodexProfile {
     let name: String
     let authURL: URL
+    let metaURL: URL
     let email: String
     let accountID: String
     let sourceProfileKey: String?
+}
+
+private struct RefreshedCapturedAuth {
+    let tokenResponse: OAuthTokenResponse
+    let identity: CapturedIdentity
 }
 
 private struct OAuthTokenResponse: Decodable {
@@ -1044,6 +1204,13 @@ private struct OAuthTokenResponse: Decodable {
     let refreshToken: String
     let idToken: String
     let expiresAt: Double
+
+    init(accessToken: String, refreshToken: String, idToken: String, expiresAt: Double) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.idToken = idToken
+        self.expiresAt = expiresAt
+    }
 
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"

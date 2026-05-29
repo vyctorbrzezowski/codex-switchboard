@@ -9,10 +9,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let viewModel = UsageViewModel()
+    private let authMirrorService = CodexAuthMirrorService()
     private var eventMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        authMirrorService.start()
         setupStatusItem()
         setupPopover()
         viewModel.refresh()

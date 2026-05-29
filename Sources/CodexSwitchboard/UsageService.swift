@@ -360,7 +360,7 @@ final class UsageService: Sendable {
            !code.isEmpty {
             switch code {
             case "token_expired":
-                return "Expired or revoked"
+                return "Token expired"
             case "token_invalidated":
                 return "Token invalidated"
             case "token_revoked":
@@ -390,10 +390,20 @@ final class UsageService: Sendable {
     }
 
     static func isExpiredOrRevokedAuthError(_ message: String?) -> Bool {
+        isRecoverableAuthError(message) || requiresRelogin(message)
+    }
+
+    static func isRecoverableAuthError(_ message: String?) -> Bool {
+        message == "Token expired"
+    }
+
+    static func requiresRelogin(_ message: String?) -> Bool {
         message == "Expired or revoked"
             || message == "Token invalidated"
             || message == "Token revoked"
             || message == refreshFailedError
+            || message == "HTTP 401"
+            || message == "HTTP 403"
     }
 
     private func readableAPIError(from data: [String: Any]) -> String? {
