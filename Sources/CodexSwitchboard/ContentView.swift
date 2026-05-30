@@ -254,31 +254,48 @@ struct FooterView: View {
     @ObservedObject var vm: UsageViewModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(vm.accountActionError ?? timeAgo)
-                .font(.system(size: 11))
-                .foregroundColor(vm.accountActionError == nil ? .secondary : .orange)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .opacity(vm.isLoading ? 0.5 : 1)
+        ZStack {
+            HStack(spacing: 8) {
+                Text(vm.accountActionError ?? timeAgo)
+                    .font(.system(size: 11))
+                    .foregroundColor(vm.accountActionError == nil ? .secondary : .orange)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .opacity(vm.isLoading ? 0.5 : 1)
 
-            Spacer(minLength: 16)
+                Spacer(minLength: 16)
 
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 22, height: 22)
+                Button {
+                    NSApp.terminate(nil)
+                } label: {
+                    Image(systemName: "power")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .opacity(0.75)
+                .accessibilityLabel("Quit")
+                .help("Quit Codex Switchboard")
             }
-            .buttonStyle(.plain)
-            .opacity(0.75)
-            .accessibilityLabel("Quit")
-            .help("Quit Codex Switchboard")
+
+            Text(appVersionText)
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .allowsHitTesting(false)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(height: 40)
+    }
+
+    private var appVersionText: String {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              !version.isEmpty else {
+            return ""
+        }
+        return version.hasPrefix("v") ? version : "v\(version)"
     }
 
     private var timeAgo: String {

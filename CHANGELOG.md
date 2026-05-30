@@ -2,11 +2,20 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.8 - 2026-05-29
+
+- Removed every `grant_type=refresh_token` path from Switchboard; the app now never spends refresh tokens.
+- Kept only explicit login code exchange (`grant_type=authorization_code`) for adding or re-logging accounts.
+- Added a production-source guard test so refresh-token grants cannot be reintroduced silently.
+- Added a local read-only auth watcher script for diagnosing Codex auth rotations without logging raw tokens.
+- Left token freshness to Codex itself, with Switchboard passively mirroring `~/.codex/auth.json` after Codex rotates it.
+
 ## 1.0.7 - 2026-05-29
 
 - Added a Codex auth mirror that keeps captured profiles fresh when `~/.codex/auth.json` changes after Codex or ChatGPT rotates tokens.
 - Synced the live Codex auth back into its matching captured profile before switching accounts so rotated refresh tokens are not lost.
-- Refreshed stale captured auth just-in-time during `Use in Codex`, then copied the fresh auth and restarted Codex/app-server so the running session does not keep an old token in memory.
+- Added just-in-time account switching refresh. Superseded by 1.0.8 because Switchboard should never spend refresh tokens.
+- Restarted Codex/app-server after account switches so the running session does not keep an old token in memory.
 - Skipped token mirroring when no saved profile matches the live identity or when multiple profiles match ambiguously.
 
 ## 1.0.6 - 2026-05-27

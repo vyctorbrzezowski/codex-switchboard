@@ -4,6 +4,7 @@
 .build/
 .swiftpm/
 dist/
+logs/
 DerivedData/
 *.xcuserstate
 *.xcuserdata/
