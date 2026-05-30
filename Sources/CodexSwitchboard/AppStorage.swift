@@ -43,9 +43,16 @@ enum AppStorage {
         try data.write(to: tempURL, options: .atomic)
         try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: tempURL.path)
         if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
+            _ = try fileManager.replaceItemAt(
+                url,
+                withItemAt: tempURL,
+                backupItemName: nil,
+                options: [.usingNewMetadataOnly]
+            )
+        } else {
+            try fileManager.moveItem(at: tempURL, to: url)
         }
-        try fileManager.moveItem(at: tempURL, to: url)
+        try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
     }
 
     static func readJSON(_ url: URL) -> [String: Any]? {
@@ -126,7 +133,9 @@ enum AccountProfileStore {
     ) throws {
         var root = accountsRoot()
         var profiles = root["profiles"] as? [String: Any] ?? [:]
-        var entry = profiles[profileKey] as? [String: Any] ?? [:]
+        guard var entry = profiles[profileKey] as? [String: Any] else {
+            return
+        }
 
         entry["access"] = accessToken
         entry["refresh"] = refreshToken

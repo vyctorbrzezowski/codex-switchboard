@@ -2,6 +2,14 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.9-beta.1 - 2026-05-30
+
+- Hardened `Use in Codex` so Switchboard stops Codex/app-server auth consumers before replacing the active auth file.
+- Replaced remove-then-write auth updates with atomic replacements so `auth.json` does not temporarily disappear during switches or mirrors.
+- Mirrored fresh Codex auth into every captured duplicate for the same identity instead of skipping ambiguous duplicate profiles.
+- Avoided creating stale `accounts.json` entries when a duplicate captured profile has an old source key.
+- Detected the active Codex account by matching token values instead of comparing whole JSON files, which can differ only by local metadata.
+
 ## 1.0.8 - 2026-05-29
 
 - Removed every `grant_type=refresh_token` path from Switchboard; the app now never spends refresh tokens.

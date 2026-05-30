@@ -565,16 +565,7 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     }
 
     private func writeJSONObject(_ object: Any, to url: URL, permissions: Int) throws {
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-        let tempURL = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: tempURL, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: tempURL.path)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
-        }
-        try fileManager.moveItem(at: tempURL, to: url)
+        try AppStorage.writeJSON(object, to: url, permissions: permissions)
     }
 
     private func randomURLSafeString(byteCount: Int) throws -> String {
@@ -821,15 +812,7 @@ final class LocalAccountRemovalService: @unchecked Sendable {
     }
 
     private func writeJSONObject(_ object: Any, to url: URL, permissions: Int) throws {
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
-        let tempURL = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
-        try data.write(to: tempURL, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: tempURL.path)
-        if fileManager.fileExists(atPath: url.path) {
-            try fileManager.removeItem(at: url)
-        }
-        try fileManager.moveItem(at: tempURL, to: url)
+        try AppStorage.writeJSON(object, to: url, permissions: permissions)
     }
 }
 
@@ -843,6 +826,7 @@ enum CodexAccountSwitchError: LocalizedError {
     case capturedProfileMissing(String)
     case capturedProfileAmbiguous(String)
     case codexDidNotQuit
+    case codexAuthConsumersStillRunning([String])
 
     var errorDescription: String? {
         switch self {
@@ -854,6 +838,8 @@ enum CodexAccountSwitchError: LocalizedError {
             return "More than one captured auth matches \(email)."
         case .codexDidNotQuit:
             return "Codex did not quit; switch canceled."
+        case let .codexAuthConsumersStillRunning(processes):
+            return "Codex auth consumers are still running; switch canceled: \(processes.joined(separator: ", "))"
         }
     }
 }
@@ -875,6 +861,10 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
     private var bundledCodexURL: URL {
         appURL.appendingPathComponent("Contents/Resources/codex")
+    }
+
+    private var bundledNodeReplURL: URL {
+        appURL.appendingPathComponent("Contents/Resources/node_repl")
     }
 
     var isCodexInstalled: Bool {
@@ -900,13 +890,20 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             }
         }
 
-        try terminateCodex()
-        didTerminateCodex = true
+        let codexWasRunning = !runningCodexApps().isEmpty
+        do {
+            try terminateCodex()
+            didTerminateCodex = codexWasRunning
+        } catch CodexAccountSwitchError.codexDidNotQuit {
+            throw CodexAccountSwitchError.codexDidNotQuit
+        } catch {
+            didTerminateCodex = codexWasRunning && runningCodexApps().isEmpty
+            throw error
+        }
         try CodexAuthFileLock.withLock {
             try copyReplacing(source: profile.authURL, destination: defaultAuthURL)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultAuthURL.path)
         }
-        restartAppServerDaemonBestEffort()
         try launchCodex()
         didLaunchCodex = true
 
@@ -917,9 +914,12 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     }
 
     func currentSourceProfileKey() -> String? {
-        guard let activeData = try? Data(contentsOf: defaultAuthURL) else { return nil }
+        guard let activeAuth = StoredCodexAuth.load(from: defaultAuthURL) else { return nil }
         return capturedProfiles().first { profile in
-            (try? Data(contentsOf: profile.authURL)) == activeData
+            guard let profileAuth = StoredCodexAuth.load(from: profile.authURL) else { return false }
+            return profileAuth.idToken == activeAuth.idToken
+                && profileAuth.accessToken == activeAuth.accessToken
+                && profileAuth.refreshToken == activeAuth.refreshToken
         }?.sourceProfileKey
     }
 
@@ -990,12 +990,17 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
         for _ in 0..<30 {
             if runningCodexApps().isEmpty {
-                return
+                break
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
 
-        throw CodexAccountSwitchError.codexDidNotQuit
+        if !runningCodexApps().isEmpty {
+            throw CodexAccountSwitchError.codexDidNotQuit
+        }
+
+        stopAppServerDaemonBestEffort()
+        try terminateResidualAuthConsumers()
     }
 
     private func runningCodexApps() -> [NSRunningApplication] {
@@ -1008,17 +1013,72 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         try run("/usr/bin/open", ["-n", appURL.path])
     }
 
-    private func restartAppServerDaemonBestEffort() {
+    private func stopAppServerDaemonBestEffort() {
         guard fileManager.isExecutableFile(atPath: bundledCodexURL.path) else { return }
-        if (try? run(bundledCodexURL.path, ["app-server", "daemon", "restart"])) != nil {
-            return
-        }
-        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "bootstrap"])
-        if (try? run(bundledCodexURL.path, ["app-server", "daemon", "restart"])) != nil {
-            return
-        }
         _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "stop"])
-        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "start"])
+    }
+
+    private func terminateResidualAuthConsumers() throws {
+        let pids = residualAuthConsumerPIDs()
+        guard !pids.isEmpty else { return }
+
+        _ = try? run("/bin/kill", ["-TERM"] + pids.map(String.init))
+        if waitForResidualAuthConsumersToExit(timeout: 5) {
+            return
+        }
+
+        let stubbornPIDs = residualAuthConsumerPIDs()
+        if !stubbornPIDs.isEmpty {
+            _ = try? run("/bin/kill", ["-KILL"] + stubbornPIDs.map(String.init))
+        }
+
+        if !waitForResidualAuthConsumersToExit(timeout: 2) {
+            throw CodexAccountSwitchError.codexAuthConsumersStillRunning(residualAuthConsumerDescriptions())
+        }
+    }
+
+    private func waitForResidualAuthConsumersToExit(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if residualAuthConsumerPIDs().isEmpty {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        } while Date() < deadline
+
+        return residualAuthConsumerPIDs().isEmpty
+    }
+
+    private func residualAuthConsumerPIDs() -> [Int32] {
+        residualAuthConsumers().map(\.pid)
+    }
+
+    private func residualAuthConsumerDescriptions() -> [String] {
+        residualAuthConsumers().map { "\($0.pid) \($0.command)" }
+    }
+
+    private func residualAuthConsumers() -> [(pid: Int32, command: String)] {
+        let output = runBestEffort("/bin/ps", ["-axo", "pid=,command="])
+        return output.split(separator: "\n").compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let space = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }),
+                  let pid = Int32(trimmed[..<space]) else {
+                return nil
+            }
+
+            let command = trimmed[space...].trimmingCharacters(in: .whitespaces)
+            guard isBundledAuthConsumer(command) else { return nil }
+            return (pid, command)
+        }
+    }
+
+    private func isBundledAuthConsumer(_ command: String) -> Bool {
+        let codexPath = bundledCodexURL.path
+        let nodeReplPath = bundledNodeReplURL.path
+        return command == codexPath
+            || command.hasPrefix("\(codexPath) ")
+            || command == nodeReplPath
+            || command.hasPrefix("\(nodeReplPath) ")
     }
 
     private func copyReplacing(source: URL, destination: URL) throws {
@@ -1026,10 +1086,20 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        let tempURL = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        try fileManager.copyItem(at: source, to: tempURL)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
         if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
+            _ = try fileManager.replaceItemAt(
+                destination,
+                withItemAt: tempURL,
+                backupItemName: nil,
+                options: [.usingNewMetadataOnly]
+            )
+        } else {
+            try fileManager.moveItem(at: tempURL, to: destination)
         }
-        try fileManager.copyItem(at: source, to: destination)
     }
 
     private func readJSONObject(_ url: URL) -> [String: Any]? {

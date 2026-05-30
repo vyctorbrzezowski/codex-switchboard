@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct CodexAuthMirrorResult: Equatable {
@@ -70,18 +71,25 @@ final class CodexAuthMirrorService: @unchecked Sendable {
         }
 
         let matches = capturedProfiles().filter { $0.matches(liveAuth) }
-        guard matches.count == 1, let match = matches.first else {
+        guard !matches.isEmpty else {
             return CodexAuthMirrorResult(
                 status: .skipped,
                 profileKey: nil,
-                reason: matches.isEmpty ? "no matching profile" : "ambiguous matching profiles"
+                reason: "no matching profile"
             )
         }
 
         do {
-            try copyAuth(liveAuth.root, to: match.authURL)
-            try updateMeta(match, with: liveAuth)
-            if let profileKey = match.sourceProfileKey, !profileKey.isEmpty {
+            var syncedProfileKeys: [String] = []
+            for match in matches {
+                try copyAuth(liveAuth.root, to: match.authURL)
+                try updateMeta(match, with: liveAuth)
+                if let profileKey = match.sourceProfileKey, !profileKey.isEmpty {
+                    syncedProfileKeys.append(profileKey)
+                }
+            }
+
+            for profileKey in Set(syncedProfileKeys) {
                 try AccountProfileStore.updateTokens(
                     profileKey: profileKey,
                     email: liveAuth.email,
@@ -92,9 +100,14 @@ final class CodexAuthMirrorService: @unchecked Sendable {
                     expiresAt: liveAuth.accessExpiresAt
                 )
             }
-            return CodexAuthMirrorResult(status: .synced, profileKey: match.sourceProfileKey, reason: nil)
+
+            return CodexAuthMirrorResult(
+                status: .synced,
+                profileKey: syncedProfileKeys.sorted().first,
+                reason: matches.count > 1 ? "synced matching profiles" : nil
+            )
         } catch {
-            return CodexAuthMirrorResult(status: .skipped, profileKey: match.sourceProfileKey, reason: error.localizedDescription)
+            return CodexAuthMirrorResult(status: .skipped, profileKey: nil, reason: error.localizedDescription)
         }
     }
 
@@ -106,12 +119,13 @@ final class CodexAuthMirrorService: @unchecked Sendable {
     }
 
     private func fileSignature() -> FileSignature? {
-        guard let attrs = try? fileManager.attributesOfItem(atPath: authURL.path),
+        guard let data = try? Data(contentsOf: authURL),
+              let attrs = try? fileManager.attributesOfItem(atPath: authURL.path),
               let modified = attrs[.modificationDate] as? Date,
               let size = attrs[.size] as? NSNumber else {
             return nil
         }
-        return FileSignature(modified: modified, size: size.int64Value)
+        return FileSignature(modified: modified, size: size.int64Value, hash: data.codexSwitchboardSHA256)
     }
 
     private func capturedProfiles() -> [MirrorableCapturedProfile] {
@@ -172,6 +186,7 @@ enum CodexAuthFileLock {
 private struct FileSignature: Equatable {
     let modified: Date
     let size: Int64
+    let hash: String
 }
 
 private struct MirrorableCapturedProfile {
@@ -245,6 +260,12 @@ struct StoredCodexAuth {
 }
 
 private extension Data {
+    var codexSwitchboardSHA256: String {
+        SHA256.hash(data: self)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     init?(codexBase64URLString: String) {
         var normalized = codexBase64URLString
             .replacingOccurrences(of: "-", with: "+")

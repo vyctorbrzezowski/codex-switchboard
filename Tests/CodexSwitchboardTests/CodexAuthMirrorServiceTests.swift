@@ -33,7 +33,7 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
         XCTAssertEqual(refreshToken(in: profileURL.appendingPathComponent("auth.json")), "fresh-refresh")
     }
 
-    func testSyncSkipsAmbiguousMatchingProfiles() throws {
+    func testSyncUpdatesDuplicateProfilesForSameIdentity() throws {
         let root = try temporaryDirectory()
         let liveAuthURL = root.appendingPathComponent("auth.json")
         let profilesURL = root.appendingPathComponent("profiles", isDirectory: true)
@@ -61,15 +61,15 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
             interval: 30
         ).syncActiveAuth()
 
-        XCTAssertEqual(result.status, .skipped)
-        XCTAssertEqual(result.reason, "ambiguous matching profiles")
+        XCTAssertEqual(result.status, .synced)
+        XCTAssertEqual(result.reason, "synced matching profiles")
         XCTAssertEqual(
             refreshToken(in: profilesURL.appendingPathComponent("one/auth.json")),
-            "one-refresh"
+            "fresh-refresh"
         )
         XCTAssertEqual(
             refreshToken(in: profilesURL.appendingPathComponent("two/auth.json")),
-            "two-refresh"
+            "fresh-refresh"
         )
     }
 
