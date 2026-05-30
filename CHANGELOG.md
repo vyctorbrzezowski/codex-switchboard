@@ -2,6 +2,11 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.9-beta.2 - 2026-05-30
+
+- Fixed `Use in Codex` hanging forever after Codex closed when the residual-process scan produced more output than its pipe buffer.
+- Captured subprocess output through private temporary files and added a 10-second timeout so account switching returns an error instead of deadlocking.
+
 ## 1.0.9-beta.1 - 2026-05-30
 
 - Hardened `Use in Codex` so Switchboard stops Codex/app-server auth consumers before replacing the active auth file.

@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 import Network
 import Security
@@ -1108,18 +1109,53 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     }
 
     @discardableResult
-    private func run(_ launchPath: String, _ arguments: [String]) throws -> String {
+    private func run(_ launchPath: String, _ arguments: [String], timeout: TimeInterval = 10) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        process.waitUntilExit()
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexSwitchboard-\(UUID().uuidString).log")
+        guard fileManager.createFile(atPath: outputURL.path, contents: nil),
+              let outputHandle = FileHandle(forWritingAtPath: outputURL.path) else {
+            throw NSError(
+                domain: "CodexSwitchboard.CodexAccountSwitchService",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Could not create temporary command output file."]
+            )
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
+        defer {
+            try? outputHandle.close()
+            try? fileManager.removeItem(at: outputURL)
+        }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.standardOutput = outputHandle
+        process.standardError = outputHandle
+        try process.run()
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        if process.isRunning {
+            process.terminate()
+            Thread.sleep(forTimeInterval: 0.25)
+            if process.isRunning {
+                Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            throw NSError(
+                domain: "CodexSwitchboard.CodexAccountSwitchService",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Command timed out: \(launchPath) \(arguments.joined(separator: " "))"]
+            )
+        }
+
+        process.waitUntilExit()
+        try outputHandle.synchronize()
+        let data = (try? Data(contentsOf: outputURL)) ?? Data()
         let output = String(data: data, encoding: .utf8) ?? ""
         if process.terminationStatus != 0 {
             throw NSError(
