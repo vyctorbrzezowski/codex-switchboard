@@ -448,8 +448,15 @@ final class UsageService: Sendable {
 
     private func dateValue(_ value: Any?) -> Date? {
         if let string = value as? String {
-            return Self.isoDateWithFractionalSeconds.date(from: string)
-                ?? Self.isoDate.date(from: string)
+            let fractionalFormatter = ISO8601DateFormatter()
+            fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = fractionalFormatter.date(from: string) {
+                return date
+            }
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            return formatter.date(from: string)
         }
 
         if let number = value as? Double {
@@ -463,16 +470,4 @@ final class UsageService: Sendable {
 
         return nil
     }
-
-    private static let isoDate: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    private static let isoDateWithFractionalSeconds: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 }

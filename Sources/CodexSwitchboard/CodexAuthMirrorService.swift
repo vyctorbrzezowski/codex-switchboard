@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 struct CodexAuthMirrorResult: Equatable {
@@ -10,6 +11,14 @@ struct CodexAuthMirrorResult: Equatable {
     let status: Status
     let profileKey: String?
     let reason: String?
+    let rememberSignature: Bool
+
+    init(status: Status, profileKey: String?, reason: String?, rememberSignature: Bool = false) {
+        self.status = status
+        self.profileKey = profileKey
+        self.reason = reason
+        self.rememberSignature = rememberSignature
+    }
 }
 
 final class CodexAuthMirrorService: @unchecked Sendable {
@@ -19,6 +28,7 @@ final class CodexAuthMirrorService: @unchecked Sendable {
     private let queue = DispatchQueue(label: "CodexSwitchboard.CodexAuthMirror")
     private let interval: TimeInterval
     private var timer: DispatchSourceTimer?
+    private var directorySource: DispatchSourceFileSystemObject?
     private var lastSignature: FileSignature?
 
     init(
@@ -36,10 +46,10 @@ final class CodexAuthMirrorService: @unchecked Sendable {
 
     func start() {
         queue.async {
-            guard self.timer == nil else { return }
+            guard self.timer == nil, self.directorySource == nil else { return }
 
-            self.lastSignature = self.fileSignature()
-            _ = self.syncActiveAuth()
+            self.syncIfChanged(force: true)
+            self.startDirectoryWatch()
 
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
             timer.schedule(deadline: .now() + self.interval, repeating: self.interval)
@@ -55,6 +65,8 @@ final class CodexAuthMirrorService: @unchecked Sendable {
         queue.async {
             self.timer?.cancel()
             self.timer = nil
+            self.directorySource?.cancel()
+            self.directorySource = nil
         }
     }
 
@@ -78,15 +90,46 @@ final class CodexAuthMirrorService: @unchecked Sendable {
                 reason: "no matching profile"
             )
         }
+        let matchedAccountIDs = Set(matches.map(\.auth.accountID).filter { !$0.isEmpty })
+        if liveAuth.accountID.isEmpty, matchedAccountIDs.count > 1 {
+            return CodexAuthMirrorResult(
+                status: .skipped,
+                profileKey: nil,
+                reason: "ambiguous live auth account"
+            )
+        }
+
+        let canonicalMatch = matches.max { lhs, rhs in
+            lhs.freshnessDate < rhs.freshnessDate
+        }!
+        do {
+            let removedProfileKeys = try CapturedProfileDedupeService.removeDuplicates(
+                keeping: canonicalMatch.profileURL,
+                email: liveAuth.email,
+                accountID: liveAuth.accountID,
+                profileStoreURL: profileStoreURL
+            )
+            let keysToRemove = removedProfileKeys.subtracting([canonicalMatch.sourceProfileKey].compactMap { $0 })
+            try AccountProfileStore.remove(profileKeys: keysToRemove)
+        } catch {
+            return CodexAuthMirrorResult(status: .skipped, profileKey: nil, reason: error.localizedDescription)
+        }
+
+        guard canonicalMatch.canAccept(liveAuth) else {
+            return CodexAuthMirrorResult(
+                status: .skipped,
+                profileKey: nil,
+                reason: "live auth is older than matching profile",
+                rememberSignature: true
+            )
+        }
 
         do {
             var syncedProfileKeys: [String] = []
-            for match in matches {
-                try copyAuth(liveAuth.root, to: match.authURL)
-                try updateMeta(match, with: liveAuth)
-                if let profileKey = match.sourceProfileKey, !profileKey.isEmpty {
-                    syncedProfileKeys.append(profileKey)
-                }
+            try copyAuth(liveAuth.root, to: canonicalMatch.authURL)
+            try updateMeta(canonicalMatch, with: liveAuth)
+            if let profileKey = canonicalMatch.sourceProfileKey, !profileKey.isEmpty {
+                syncedProfileKeys.append(profileKey)
             }
 
             for profileKey in Set(syncedProfileKeys) {
@@ -104,18 +147,41 @@ final class CodexAuthMirrorService: @unchecked Sendable {
             return CodexAuthMirrorResult(
                 status: .synced,
                 profileKey: syncedProfileKeys.sorted().first,
-                reason: matches.count > 1 ? "synced matching profiles" : nil
+                reason: matches.count > 1 ? "deduped matching profiles" : nil
             )
         } catch {
             return CodexAuthMirrorResult(status: .skipped, profileKey: nil, reason: error.localizedDescription)
         }
     }
 
-    private func syncIfChanged() {
+    private func syncIfChanged(force: Bool = false) {
         let signature = fileSignature()
-        guard signature != lastSignature else { return }
-        lastSignature = signature
-        _ = syncActiveAuth()
+        guard force || signature != lastSignature else { return }
+
+        let result = syncActiveAuth()
+        if result.status == .synced || result.rememberSignature {
+            lastSignature = signature
+        }
+    }
+
+    private func startDirectoryWatch() {
+        let directoryURL = authURL.deletingLastPathComponent()
+        let descriptor = open(directoryURL.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .rename, .delete],
+            queue: queue
+        )
+        source.setEventHandler { [weak self] in
+            self?.syncIfChanged()
+        }
+        source.setCancelHandler {
+            close(descriptor)
+        }
+        directorySource = source
+        source.resume()
     }
 
     private func fileSignature() -> FileSignature? {
@@ -137,10 +203,10 @@ final class CodexAuthMirrorService: @unchecked Sendable {
             return []
         }
 
-        return entries.compactMap { entryURL in
-            guard (try? entryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
-                return nil
-            }
+            return entries.compactMap { entryURL in
+                guard (try? entryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                    return nil
+                }
 
             let authURL = entryURL.appendingPathComponent("auth.json")
             guard let auth = StoredCodexAuth.load(from: authURL) else { return nil }
@@ -148,6 +214,7 @@ final class CodexAuthMirrorService: @unchecked Sendable {
             let metaURL = entryURL.appendingPathComponent("meta.json")
             let meta = AppStorage.readJSON(metaURL) ?? [:]
             return MirrorableCapturedProfile(
+                profileURL: entryURL,
                 authURL: authURL,
                 metaURL: metaURL,
                 auth: auth,
@@ -157,9 +224,7 @@ final class CodexAuthMirrorService: @unchecked Sendable {
     }
 
     private func copyAuth(_ object: [String: Any], to url: URL) throws {
-        var updated = object
-        updated["last_refresh"] = ISO8601DateFormatter.codexSwitchboard.string(from: Date())
-        try AppStorage.writeJSON(updated, to: url, permissions: 0o600)
+        try AppStorage.writeJSON(object, to: url, permissions: 0o600)
     }
 
     private func updateMeta(_ profile: MirrorableCapturedProfile, with auth: StoredCodexAuth) throws {
@@ -190,10 +255,14 @@ private struct FileSignature: Equatable {
 }
 
 private struct MirrorableCapturedProfile {
+    let profileURL: URL
     let authURL: URL
     let metaURL: URL
     let auth: StoredCodexAuth
     let sourceProfileKey: String?
+    var freshnessDate: Date {
+        CapturedProfileDedupeService.record(for: profileURL)?.freshnessDate ?? .distantPast
+    }
 
     func matches(_ live: StoredCodexAuth) -> Bool {
         guard !auth.subject.isEmpty,
@@ -201,9 +270,29 @@ private struct MirrorableCapturedProfile {
             return false
         }
 
+        guard auth.email == live.email else {
+            return false
+        }
+
         if !auth.accountID.isEmpty,
            !live.accountID.isEmpty,
            auth.accountID != live.accountID {
+            return false
+        }
+
+        return true
+    }
+
+    func canAccept(_ live: StoredCodexAuth) -> Bool {
+        if let liveLastRefresh = live.lastRefreshDate,
+           let profileLastRefresh = auth.lastRefreshDate,
+           liveLastRefresh < profileLastRefresh.addingTimeInterval(-2) {
+            return false
+        }
+
+        if live.idIssuedAt > 0,
+           auth.idIssuedAt > 0,
+           live.idIssuedAt + 2_000 < auth.idIssuedAt {
             return false
         }
 
@@ -220,7 +309,9 @@ struct StoredCodexAuth {
     let email: String
     let subject: String
     let accessExpiresAt: Int
+    let idIssuedAt: Int
     let idExpiresAt: Int
+    let lastRefreshDate: Date?
 
     static func load(from url: URL) -> StoredCodexAuth? {
         guard let root = AppStorage.readJSON(url),
@@ -233,18 +324,23 @@ struct StoredCodexAuth {
         }
 
         let accessPayload = decodePayload(accessToken)
+        let authPayload = idPayload["https://api.openai.com/auth"] as? [String: Any]
         let accessExp = (accessPayload?["exp"] as? Double) ?? (idPayload["exp"] as? Double)
+        let idIat = idPayload["iat"] as? Double
         let idExp = idPayload["exp"] as? Double
         return StoredCodexAuth(
             root: root,
             idToken: idToken,
             accessToken: accessToken,
             refreshToken: refreshToken,
-            accountID: (tokens["account_id"] as? String) ?? "",
+            accountID: ((tokens["account_id"] as? String) ?? (authPayload?["chatgpt_account_id"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines),
             email: ((idPayload["email"] as? String) ?? "").lowercased(),
             subject: (idPayload["sub"] as? String) ?? "",
             accessExpiresAt: accessExp.map { Int($0 * 1000) } ?? 0,
-            idExpiresAt: idExp.map { Int($0 * 1000) } ?? 0
+            idIssuedAt: idIat.map { Int($0 * 1000) } ?? 0,
+            idExpiresAt: idExp.map { Int($0 * 1000) } ?? 0,
+            lastRefreshDate: parseISO8601(root["last_refresh"] as? String)
         )
     }
 
@@ -256,6 +352,19 @@ struct StoredCodexAuth {
             return nil
         }
         return payload
+    }
+
+    private static func parseISO8601(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) {
+            return date
+        }
+
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        return fallbackFormatter.date(from: raw)
     }
 }
 

@@ -67,6 +67,17 @@ struct AccountProfileCollection {
 }
 
 enum AccountProfileStore {
+    enum Error: LocalizedError {
+        case missingProfile(String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .missingProfile(profileKey):
+                return "Account profile is missing from accounts.json: \(profileKey)"
+            }
+        }
+    }
+
     static func load() -> AccountProfileCollection {
         if let local = loadLocal(), !local.profiles.isEmpty {
             return local
@@ -92,34 +103,36 @@ enum AccountProfileStore {
         refreshToken: String,
         expiresAt: Int
     ) throws {
-        var root = accountsRoot()
-        var profiles = root["profiles"] as? [String: Any] ?? [:]
-        var entry = profiles[profileKey] as? [String: Any] ?? [:]
+        try CodexAuthFileLock.withLock {
+            var root = accountsRoot()
+            var profiles = root["profiles"] as? [String: Any] ?? [:]
+            var entry = profiles[profileKey] as? [String: Any] ?? [:]
 
-        if let oldProfileKey,
-           oldProfileKey != profileKey,
-           let oldEntry = profiles[oldProfileKey] as? [String: Any] {
-            entry = oldEntry.merging(entry) { current, _ in current }
-            profiles.removeValue(forKey: oldProfileKey)
-            replaceProfileKey(in: &root, from: oldProfileKey, to: profileKey)
+            if let oldProfileKey,
+               oldProfileKey != profileKey,
+               let oldEntry = profiles[oldProfileKey] as? [String: Any] {
+                entry = oldEntry.merging(entry) { current, _ in current }
+                profiles.removeValue(forKey: oldProfileKey)
+                replaceProfileKey(in: &root, from: oldProfileKey, to: profileKey)
+            }
+
+            entry["access"] = accessToken
+            entry["refresh"] = refreshToken
+            entry["expires"] = expiresAt
+            entry["provider"] = "openai-codex"
+            entry["type"] = "oauth"
+            entry["email"] = email
+            entry["accountId"] = accountID
+
+            removeDuplicateProfiles(from: &profiles, root: &root, keeping: profileKey, email: email, accountID: accountID)
+            profiles[profileKey] = entry
+            root["profiles"] = profiles
+            if root["version"] == nil {
+                root["version"] = 1
+            }
+            appendToDefaultOrder(in: &root, key: profileKey)
+            try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
         }
-
-        entry["access"] = accessToken
-        entry["refresh"] = refreshToken
-        entry["expires"] = expiresAt
-        entry["provider"] = "openai-codex"
-        entry["type"] = "oauth"
-        entry["email"] = email
-        entry["accountId"] = accountID
-
-        removeDuplicateProfiles(from: &profiles, root: &root, keeping: profileKey, email: email, accountID: accountID)
-        profiles[profileKey] = entry
-        root["profiles"] = profiles
-        if root["version"] == nil {
-            root["version"] = 1
-        }
-        appendToDefaultOrder(in: &root, key: profileKey)
-        try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
     }
 
     static func updateTokens(
@@ -131,40 +144,44 @@ enum AccountProfileStore {
         idToken: String?,
         expiresAt: Int
     ) throws {
-        var root = accountsRoot()
-        var profiles = root["profiles"] as? [String: Any] ?? [:]
-        guard var entry = profiles[profileKey] as? [String: Any] else {
-            return
+        try CodexAuthFileLock.withLock {
+            var root = accountsRoot()
+            var profiles = root["profiles"] as? [String: Any] ?? [:]
+            guard var entry = profiles[profileKey] as? [String: Any] else {
+                throw Error.missingProfile(profileKey)
+            }
+
+            entry["access"] = accessToken
+            entry["refresh"] = refreshToken
+            entry["expires"] = expiresAt
+            profiles[profileKey] = entry
+            root["profiles"] = profiles
+            try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
+
+            try updateCapturedProfiles(
+                profileKey: profileKey,
+                email: email,
+                accountID: accountID,
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                idToken: idToken,
+                expiresAt: expiresAt
+            )
         }
-
-        entry["access"] = accessToken
-        entry["refresh"] = refreshToken
-        entry["expires"] = expiresAt
-        profiles[profileKey] = entry
-        root["profiles"] = profiles
-        try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
-
-        try? updateCapturedProfiles(
-            profileKey: profileKey,
-            email: email,
-            accountID: accountID,
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            idToken: idToken,
-            expiresAt: expiresAt
-        )
     }
 
     static func remove(profileKeys: Set<String>) throws {
         guard !profileKeys.isEmpty else { return }
-        var root = accountsRoot()
-        var profiles = root["profiles"] as? [String: Any] ?? [:]
-        for key in profileKeys {
-            profiles.removeValue(forKey: key)
-            removeProfileKey(in: &root, key: key)
+        try CodexAuthFileLock.withLock {
+            var root = accountsRoot()
+            var profiles = root["profiles"] as? [String: Any] ?? [:]
+            for key in profileKeys {
+                profiles.removeValue(forKey: key)
+                removeProfileKey(in: &root, key: key)
+            }
+            root["profiles"] = profiles
+            try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
         }
-        root["profiles"] = profiles
-        try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
     }
 
     private static func loadLocal() -> AccountProfileCollection? {
@@ -300,7 +317,6 @@ enum AccountProfileStore {
                 tokens["account_id"] = accountID
             }
             auth["tokens"] = tokens
-            auth["last_refresh"] = ISO8601DateFormatter.codexSwitchboard.string(from: Date())
             try AppStorage.writeJSON(auth, to: authURL, permissions: 0o600)
 
             meta["expires_at"] = expiresAt

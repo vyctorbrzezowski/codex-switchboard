@@ -19,6 +19,7 @@ enum CodexAccountCaptureError: LocalizedError {
     case loginFailed(String)
     case tokenExchangeFailed(Int)
     case invalidTokenResponse
+    case staleTokenResponse
     case missingIdentity
     case identityMismatch(expected: String, got: String)
     case invalidProfileName
@@ -38,6 +39,8 @@ enum CodexAccountCaptureError: LocalizedError {
             return "OAuth code exchange failed (\(status))."
         case .invalidTokenResponse:
             return "Invalid OAuth response."
+        case .staleTokenResponse:
+            return "Login returned an old auth snapshot. Please sign out of OpenAI in the browser and sign in again."
         case .missingIdentity:
             return "Login did not include email or account_id."
         case let .identityMismatch(expected, got):
@@ -58,12 +61,14 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     private let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
     private let redirectURI = "http://localhost:1455/auth/callback"
     private let scope = "openid profile email offline_access"
+    private let loginTokenIssueTolerance: TimeInterval = 600
 
     private var profileStoreURL: URL {
         AppStorage.profilesURL
     }
 
     func captureNewAccount() async throws -> CapturedCodexAccount {
+        let loginStartedAt = Date()
         let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = codeChallenge(for: verifier)
         let state = try randomURLSafeString(byteCount: 24)
@@ -98,29 +103,34 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         }
 
         let tokenResponse = try await exchangeCode(code, verifier: verifier)
+        try validateFreshLoginToken(tokenResponse, startedAt: loginStartedAt)
         let identity = try identity(from: tokenResponse.idToken)
-        let localProfileKey = try plannedLocalProfileKey(identity: identity)
-        let profileName = try writeCapturedAuth(
-            tokenResponse,
-            identity: identity,
-            sourceProfileKey: localProfileKey
-        )
-        try updateLocalProfiles(
-            tokenResponse,
-            identity: identity,
-            profileKey: localProfileKey,
-            oldProfileKey: nil
-        )
+        let capture = try CodexAuthFileLock.withLock {
+            let localProfileKey = try plannedLocalProfileKey(identity: identity)
+            let name = try writeCapturedAuth(
+                tokenResponse,
+                identity: identity,
+                sourceProfileKey: localProfileKey
+            )
+            try updateLocalProfiles(
+                tokenResponse,
+                identity: identity,
+                profileKey: localProfileKey,
+                oldProfileKey: nil
+            )
+            return CapturedCodexAccount(
+                profileName: name,
+                email: identity.email,
+                accountID: identity.accountID,
+                sourceProfileKey: localProfileKey
+            )
+        }
 
-        return CapturedCodexAccount(
-            profileName: profileName,
-            email: identity.email,
-            accountID: identity.accountID,
-            sourceProfileKey: localProfileKey
-        )
+        return capture
     }
 
     func captureAccount(for target: Account) async throws -> CapturedCodexAccount {
+        let loginStartedAt = Date()
         let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = codeChallenge(for: verifier)
         let state = try randomURLSafeString(byteCount: 24)
@@ -159,27 +169,31 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         }
 
         let tokenResponse = try await exchangeCode(code, verifier: verifier)
+        try validateFreshLoginToken(tokenResponse, startedAt: loginStartedAt)
         let identity = try identity(from: tokenResponse.idToken)
         try validate(identity: identity, matches: target)
-        let localProfileKey = try plannedLocalProfileKey(identity: identity, target: target)
-        let profileName = try writeCapturedAuth(
-            tokenResponse,
-            identity: identity,
-            sourceProfileKey: localProfileKey
-        )
-        try updateLocalProfiles(
-            tokenResponse,
-            identity: identity,
-            profileKey: localProfileKey,
-            oldProfileKey: target.profileKey
-        )
+        let capture = try CodexAuthFileLock.withLock {
+            let localProfileKey = try plannedLocalProfileKey(identity: identity, target: target)
+            let name = try writeCapturedAuth(
+                tokenResponse,
+                identity: identity,
+                sourceProfileKey: localProfileKey
+            )
+            try updateLocalProfiles(
+                tokenResponse,
+                identity: identity,
+                profileKey: localProfileKey,
+                oldProfileKey: target.profileKey
+            )
+            return CapturedCodexAccount(
+                profileName: name,
+                email: identity.email,
+                accountID: identity.accountID,
+                sourceProfileKey: localProfileKey
+            )
+        }
 
-        return CapturedCodexAccount(
-            profileName: profileName,
-            email: identity.email,
-            accountID: identity.accountID,
-            sourceProfileKey: localProfileKey
-        )
+        return capture
     }
 
     private func makeAuthorizationURL(challenge: String, state: String, loginHint: String? = nil) -> URL {
@@ -230,6 +244,22 @@ final class CodexAccountCaptureService: @unchecked Sendable {
             throw CodexAccountCaptureError.invalidTokenResponse
         }
         return decoded
+    }
+
+    private func validateFreshLoginToken(_ tokenResponse: OAuthTokenResponse, startedAt: Date) throws {
+        let payload = try decodeJWTPayload(tokenResponse.idToken)
+        guard let issuedAtSeconds = payload["iat"] as? Double,
+              let expiresAtSeconds = payload["exp"] as? Double else {
+            throw CodexAccountCaptureError.invalidTokenResponse
+        }
+
+        let issuedAt = Date(timeIntervalSince1970: issuedAtSeconds)
+        let expiresAt = Date(timeIntervalSince1970: expiresAtSeconds)
+        let now = Date()
+        guard issuedAt >= startedAt.addingTimeInterval(-loginTokenIssueTolerance),
+              expiresAt > now.addingTimeInterval(60) else {
+            throw CodexAccountCaptureError.staleTokenResponse
+        }
     }
 
     private func identity(from idToken: String) throws -> CapturedIdentity {
@@ -307,6 +337,14 @@ final class CodexAccountCaptureService: @unchecked Sendable {
             "expires_at": Int(tokenResponse.expiresAt),
         ]
         try writeJSONObject(meta, to: profileURL.appendingPathComponent("meta.json"), permissions: 0o600)
+        let removedProfileKeys = try CapturedProfileDedupeService.removeDuplicates(
+            keeping: profileURL,
+            email: identity.email,
+            accountID: identity.accountID,
+            profileStoreURL: profileStoreURL
+        )
+        let keysToRemove = removedProfileKeys.subtracting([sourceProfileKey].compactMap { $0 })
+        try AccountProfileStore.remove(profileKeys: keysToRemove)
 
         return profileName
     }
@@ -828,6 +866,7 @@ enum CodexAccountSwitchError: LocalizedError {
     case capturedProfileAmbiguous(String)
     case codexDidNotQuit
     case codexAuthConsumersStillRunning([String])
+    case codexDatabaseStillLocked([String])
 
     var errorDescription: String? {
         switch self {
@@ -841,6 +880,8 @@ enum CodexAccountSwitchError: LocalizedError {
             return "Codex did not quit; switch canceled."
         case let .codexAuthConsumersStillRunning(processes):
             return "Codex auth consumers are still running; switch canceled: \(processes.joined(separator: ", "))"
+        case let .codexDatabaseStillLocked(processes):
+            return "Codex database is still locked; switch canceled: \(processes.joined(separator: ", "))"
         }
     }
 }
@@ -868,6 +909,10 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         appURL.appendingPathComponent("Contents/Resources/node_repl")
     }
 
+    private var defaultCodexHomePath: String {
+        homeURL.appendingPathComponent(".codex", isDirectory: true).standardizedFileURL.path
+    }
+
     var isCodexInstalled: Bool {
         fileManager.fileExists(atPath: appURL.path)
             || !NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).isEmpty
@@ -878,9 +923,9 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             throw CodexAccountSwitchError.codexAppMissing
         }
 
-        let profile = try CodexAuthFileLock.withLock {
+        try CodexAuthFileLock.withLock {
             authMirrorService.syncActiveAuth()
-            return try capturedProfile(for: account)
+            _ = try capturedProfile(for: account)
         }
 
         var didTerminateCodex = false
@@ -901,10 +946,18 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             didTerminateCodex = codexWasRunning && runningCodexApps().isEmpty
             throw error
         }
-        try CodexAuthFileLock.withLock {
+        let profile = try CodexAuthFileLock.withLock {
+            // Close consumers that may have appeared while Codex was shutting down
+            // before replacing the live auth snapshot.
+            try terminateResidualAuthConsumers()
+            // Codex can rotate the active refresh token while shutting down.
+            authMirrorService.syncActiveAuth()
+            let profile = try capturedProfile(for: account)
             try copyReplacing(source: profile.authURL, destination: defaultAuthURL)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultAuthURL.path)
+            return profile
         }
+        try waitForCodexSQLiteHandlesToClose()
         try launchCodex()
         didLaunchCodex = true
 
@@ -929,9 +982,8 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
         if let profileKey = account.profileKey {
             let matches = profiles.filter { $0.sourceProfileKey == profileKey }
-            if matches.count == 1 { return matches[0] }
-            if matches.count > 1 {
-                throw CodexAccountSwitchError.capturedProfileAmbiguous(account.email)
+            if let profile = try canonicalCapturedProfile(from: matches) {
+                return profile
             }
         }
 
@@ -940,12 +992,28 @@ final class CodexAccountSwitchService: @unchecked Sendable {
                 && !account.accountID.isEmpty
                 && profile.accountID == account.accountID
         }
-        if fallbackMatches.count == 1 { return fallbackMatches[0] }
-        if fallbackMatches.count > 1 {
-            throw CodexAccountSwitchError.capturedProfileAmbiguous(account.email)
+        if let fallbackProfile = try canonicalCapturedProfile(from: fallbackMatches) {
+            return fallbackProfile
         }
 
         throw CodexAccountSwitchError.capturedProfileMissing(account.email)
+    }
+
+    private func canonicalCapturedProfile(from matches: [CapturedCodexProfile]) throws -> CapturedCodexProfile? {
+        guard let keep = matches.max(by: { $0.freshnessDate < $1.freshnessDate }) else {
+            return nil
+        }
+        guard matches.count > 1 else { return keep }
+
+        let removedProfileKeys = try CapturedProfileDedupeService.removeDuplicates(
+            keeping: keep.profileURL,
+            email: keep.email,
+            accountID: keep.accountID,
+            profileStoreURL: profileStoreURL
+        )
+        let keysToRemove = removedProfileKeys.subtracting([keep.sourceProfileKey].compactMap { $0 })
+        try AccountProfileStore.remove(profileKeys: keysToRemove)
+        return keep
     }
 
     private func capturedProfiles() -> [CapturedCodexProfile] {
@@ -973,12 +1041,15 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
             let email = (meta["email"] as? String)?.lowercased()
             let accountID = (meta["account_id"] as? String) ?? (tokens["account_id"] as? String)
+            let freshnessDate = CapturedProfileDedupeService.record(for: entry)?.freshnessDate ?? .distantPast
             return CapturedCodexProfile(
                 name: entry.lastPathComponent,
+                profileURL: entry,
                 authURL: authURL,
                 email: email ?? "",
                 accountID: accountID ?? "",
-                sourceProfileKey: meta["source_profile_key"] as? String
+                sourceProfileKey: meta["source_profile_key"] as? String,
+                freshnessDate: freshnessDate
             )
         }
     }
@@ -1050,6 +1121,73 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         return residualAuthConsumerPIDs().isEmpty
     }
 
+    private func waitForCodexSQLiteHandlesToClose(timeout: TimeInterval = 8) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastProcesses: [String] = []
+
+        repeat {
+            lastProcesses = codexSQLiteLockingProcesses()
+            if lastProcesses.isEmpty {
+                Thread.sleep(forTimeInterval: 0.25)
+                if codexSQLiteLockingProcesses().isEmpty {
+                    return
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        } while Date() < deadline
+
+        throw CodexAccountSwitchError.codexDatabaseStillLocked(lastProcesses)
+    }
+
+    private func codexSQLiteLockingProcesses() -> [String] {
+        let paths = codexSQLiteStateFiles()
+        guard !paths.isEmpty else { return [] }
+
+        let output = runBestEffort("/usr/sbin/lsof", ["-nP"] + paths.map(\.path))
+        return output
+            .split(separator: "\n")
+            .dropFirst()
+            .compactMap { line -> String? in
+                let text = String(line)
+                guard isCodexSQLiteHandle(text) else { return nil }
+                return text
+            }
+    }
+
+    private func isCodexSQLiteHandle(_ line: String) -> Bool {
+        let lowercased = line.lowercased()
+        guard lowercased.contains(".codex/"),
+              lowercased.contains(".sqlite") else {
+            return false
+        }
+        return lowercased.hasPrefix("codex")
+            || lowercased.hasPrefix("node_repl")
+    }
+
+    private func codexSQLiteStateFiles() -> [URL] {
+        guard let enumerator = fileManager.enumerator(
+            at: homeURL.appendingPathComponent(".codex", isDirectory: true),
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return enumerator.compactMap { item -> URL? in
+            guard let url = item as? URL,
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                return nil
+            }
+            let name = url.lastPathComponent
+            guard name.hasSuffix(".sqlite")
+                    || name.hasSuffix(".sqlite-wal")
+                    || name.hasSuffix(".sqlite-shm") else {
+                return nil
+            }
+            return url
+        }
+    }
+
     private func residualAuthConsumerPIDs() -> [Int32] {
         residualAuthConsumers().map(\.pid)
     }
@@ -1059,7 +1197,7 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     }
 
     private func residualAuthConsumers() -> [(pid: Int32, command: String)] {
-        let output = runBestEffort("/bin/ps", ["-axo", "pid=,command="])
+        let output = runBestEffort("/bin/ps", ["eww", "-axo", "pid=,command="])
         return output.split(separator: "\n").compactMap { line in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard let space = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }),
@@ -1068,9 +1206,24 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             }
 
             let command = trimmed[space...].trimmingCharacters(in: .whitespaces)
-            guard isBundledAuthConsumer(command) else { return nil }
+            guard isDefaultCodexHomeAuthConsumer(command) else { return nil }
             return (pid, command)
         }
+    }
+
+    private func isDefaultCodexHomeAuthConsumer(_ command: String) -> Bool {
+        if isBundledAuthConsumer(command) {
+            return true
+        }
+
+        guard isCodexAuthConsumer(command) else {
+            return false
+        }
+
+        guard let codexHome = environmentValue("CODEX_HOME", in: command) else {
+            return true
+        }
+        return URL(fileURLWithPath: codexHome).standardizedFileURL.path == defaultCodexHomePath
     }
 
     private func isBundledAuthConsumer(_ command: String) -> Bool {
@@ -1080,6 +1233,36 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             || command.hasPrefix("\(codexPath) ")
             || command == nodeReplPath
             || command.hasPrefix("\(nodeReplPath) ")
+    }
+
+    private func isCodexAuthConsumer(_ command: String) -> Bool {
+        let lowercased = command.lowercased()
+        if lowercased == "codex"
+            || lowercased.hasPrefix("codex app-server ") {
+            return true
+        }
+        if lowercased.hasPrefix("node "),
+           lowercased.contains("/codex "),
+           lowercased.contains(" app-server ") {
+            return true
+        }
+
+        return lowercased.hasPrefix("/")
+            && (
+                lowercased.contains("/codex app-server ")
+                    || lowercased.contains("/node_repl ")
+                    || lowercased.hasSuffix("/node_repl")
+            )
+    }
+
+    private func environmentValue(_ name: String, in command: String) -> String? {
+        let marker = "\(name)="
+        for token in command.split(separator: " ") {
+            guard token.hasPrefix(marker) else { continue }
+            let value = token.dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
+        }
+        return nil
     }
 
     private func copyReplacing(source: URL, destination: URL) throws {
@@ -1174,10 +1357,12 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
 private struct CapturedCodexProfile {
     let name: String
+    let profileURL: URL
     let authURL: URL
     let email: String
     let accountID: String
     let sourceProfileKey: String?
+    let freshnessDate: Date
 }
 
 private struct OAuthTokenResponse: Decodable {
@@ -1446,17 +1631,17 @@ private extension Data {
 }
 
 extension ISO8601DateFormatter {
-    static let codexSwitchboard: ISO8601DateFormatter = {
+    static var codexSwitchboard: ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
-    }()
+    }
 }
 
-private extension DateFormatter {
-    static let codexSwitchboardBackup: DateFormatter = {
+extension DateFormatter {
+    static var codexSwitchboardBackup: DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter
-    }()
+    }
 }
