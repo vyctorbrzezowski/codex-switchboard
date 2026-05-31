@@ -2,6 +2,12 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.9-beta.3 - 2026-05-31
+
+- Closed the remaining account-switch race by terminating default `~/.codex` Codex app-server and node_repl auth consumers before replacing live auth.
+- Treated Codex auth consumers without an explicit `CODEX_HOME` as default `~/.codex` consumers, matching Codex's own fallback behavior.
+- Added guard coverage so future switches keep closing residual auth consumers, wait for SQLite locks, and avoid reintroducing refresh-token grants.
+
 ## 1.0.9-beta.2 - 2026-05-30
 
 - Fixed `Use in Codex` hanging forever after Codex closed when the residual-process scan produced more output than its pipe buffer.

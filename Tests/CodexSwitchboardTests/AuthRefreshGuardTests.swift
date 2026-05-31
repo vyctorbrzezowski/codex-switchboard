@@ -95,6 +95,19 @@ final class AuthRefreshGuardTests: XCTestCase {
             detectorBody.contains("standardizedFileURL.path == defaultCodexHomePath"),
             "Only explicit CODEX_HOME processes pointing at the default ~/.codex should be terminated"
         )
+
+        guard let consumerRange = text.range(of: "private func isCodexAuthConsumer"),
+              let envRange = text.range(
+                of: "private func environmentValue",
+                range: consumerRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate Codex auth-consumer matcher")
+        }
+
+        let consumerMatcher = text[consumerRange.lowerBound..<envRange.lowerBound]
+        XCTAssertTrue(consumerMatcher.contains(#"hasPrefix("codex app-server ")"#))
+        XCTAssertTrue(consumerMatcher.contains(#"contains("/codex app-server ")"#))
+        XCTAssertTrue(consumerMatcher.contains(#"contains("/node_repl ")"#))
     }
 
     func testSwitchboardPersistsLatestAuthBeforeNormalTermination() throws {
