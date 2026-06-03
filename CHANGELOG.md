@@ -2,6 +2,14 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.9-beta.6 - 2026-06-03
+
+- Made account switching terminate Codex.app helpers, Codex app-server, Codex exec, and node_repl processes before replacing live auth.
+- Backed up the active `~/.codex/auth.json` before each switch so the previous live auth can be recovered.
+- Revalidated the destination profile identity immediately before copying it into live Codex auth.
+- Allowed the mirror to accept a newly issued login token even when old local metadata has a newer `last_refresh` timestamp.
+- Strengthened tests that guard against refresh-token grant paths and background token refresh services.
+
 ## 1.0.9-beta.3 - 2026-05-31
 
 - Closed the remaining account-switch race by terminating default `~/.codex` Codex app-server and node_repl auth consumers before replacing live auth.

@@ -28,6 +28,16 @@ final class AuthRefreshGuardTests: XCTestCase {
         }
     }
 
+    func testTokenRefreshServiceDoesNotExist() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let serviceURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexTokenRefreshService.swift")
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: serviceURL.path),
+            "Switchboard must not include a service that spends/rotates refresh tokens"
+        )
+    }
+
     func testSwitchPersistsFinalAuthRotationAfterCodexStops() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let serviceURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexAccountCaptureService.swift")
@@ -43,12 +53,96 @@ final class AuthRefreshGuardTests: XCTestCase {
 
         let shutdownHandoff = text[terminateRange.upperBound..<copyRange.lowerBound]
         XCTAssertTrue(
-            shutdownHandoff.contains("try terminateResidualAuthConsumers()"),
-            "Switching accounts must close auth consumers again immediately before replacing live auth"
+            shutdownHandoff.contains("terminateAllCodexProcesses()"),
+            "Switching accounts must close all Codex processes again immediately before replacing live auth"
         )
         XCTAssertTrue(
             shutdownHandoff.contains("authMirrorService.syncActiveAuth()"),
             "Switching accounts must persist any refresh-token rotation produced during Codex shutdown"
+        )
+    }
+
+    func testSwitchValidatesDestinationIdentityBeforeStoppingCurrentCodex() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let serviceURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexAccountCaptureService.swift")
+        let text = try String(contentsOf: serviceURL, encoding: .utf8)
+
+        guard let switchRange = text.range(of: "func switchToAccount"),
+              let terminateRange = text.range(
+                of: "try terminateCodex()",
+                range: switchRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate switch preflight")
+        }
+
+        let beforeTerminate = text[switchRange.upperBound..<terminateRange.lowerBound]
+        XCTAssertTrue(
+            beforeTerminate.contains("try validateCapturedProfileIdentity(profile, for: account)"),
+            "Switch must validate the destination profile identity before stopping the current Codex"
+        )
+        XCTAssertFalse(
+            beforeTerminate.contains("refreshStoredProfile"),
+            "Switch must not spend/rotate a refresh token before stopping Codex"
+        )
+    }
+
+    func testSwitchCopiesOnlyAfterIdentityValidationAndLiveBackup() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let serviceURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexAccountCaptureService.swift")
+        let text = try String(contentsOf: serviceURL, encoding: .utf8)
+
+        guard let switchRange = text.range(of: "func switchToAccount"),
+              let sourceRange = text.range(
+                of: "try copyReplacing(source: profile.authURL, destination: defaultAuthURL)",
+                range: switchRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate switch copy")
+        }
+
+        let beforeCopy = text[switchRange.upperBound..<sourceRange.lowerBound]
+        XCTAssertFalse(
+            beforeCopy.contains("refreshStoredProfile"),
+            "Switch must not spend/rotate a refresh token before copying to live Codex auth"
+        )
+        XCTAssertTrue(
+            beforeCopy.contains("try backupLiveAuthBeforeSwitch(to: profile)"),
+            "Switch must backup the current live Codex auth before replacing it"
+        )
+        XCTAssertTrue(
+            beforeCopy.contains("try validateCapturedProfileIdentity(profile, for: account)"),
+            "Switch must re-check destination profile identity immediately before copying it"
+        )
+    }
+
+    func testSwitchCreatesRecoverableLiveAuthBackupBeforeReplacement() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let serviceURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexAccountCaptureService.swift")
+        let text = try String(contentsOf: serviceURL, encoding: .utf8)
+
+        guard let backupRange = text.range(of: "private func backupLiveAuthBeforeSwitch"),
+              let readRange = text.range(
+                of: "private func readJSONObject",
+                range: backupRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate live-auth backup function")
+        }
+
+        let backupBody = text[backupRange.lowerBound..<readRange.lowerBound]
+        XCTAssertTrue(
+            backupBody.contains("defaultAuthURL"),
+            "Live-auth backup must copy the active ~/.codex/auth.json"
+        )
+        XCTAssertTrue(
+            backupBody.contains(#""live-auth-before-switch""#),
+            "Live-auth backup must use a clear recovery directory name"
+        )
+        XCTAssertTrue(
+            backupBody.contains(#"appendingPathComponent("auth.json")"#),
+            "Live-auth backup must preserve a directly restorable auth.json"
+        )
+        XCTAssertTrue(
+            backupBody.contains(#"appendingPathComponent("metadata.json")"#),
+            "Live-auth backup must include target metadata for recovery"
         )
     }
 
@@ -67,47 +161,95 @@ final class AuthRefreshGuardTests: XCTestCase {
             launchHandoff.contains("try waitForCodexSQLiteHandlesToClose()"),
             "Switching accounts must wait for native Codex SQLite handles to close before relaunch"
         )
+
+        guard let waitRange = text.range(of: "private func waitForCodexSQLiteHandlesToClose"),
+              let lockerRange = text.range(
+                of: "private func codexSQLiteLockingProcesses",
+                range: waitRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate SQLite lock waiter")
+        }
+        let waitBody = text[waitRange.lowerBound..<lockerRange.lowerBound]
+        XCTAssertTrue(
+            waitBody.contains("terminateAllCodexProcesses()"),
+            "SQLite wait must actively terminate new Codex processes instead of only timing out"
+        )
     }
 
-    func testSwitchTerminatesDefaultCodexHomeAuthConsumers() throws {
+    func testSwitchTerminatesAllCodexProcesses() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let serviceURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexAccountCaptureService.swift")
         let text = try String(contentsOf: serviceURL, encoding: .utf8)
 
+        // ps must NOT use `eww` flag (which leaks env vars into command column and causes false matches)
         XCTAssertTrue(
-            text.contains(#"runBestEffort("/bin/ps", ["eww", "-axo", "pid=,command="])"#),
-            "Residual auth consumer detection must include process environments so CODEX_HOME can be inspected"
+            text.contains(#"runBestEffort("/bin/ps", ["-axo", "pid=,command="])"#),
+            "Codex process detection must use plain ps without eww to avoid false env-var matches"
+        )
+        XCTAssertFalse(
+            text.contains(#""eww""#),
+            "ps must not use eww flag — it causes false matches on env vars like CODEX_CI"
         )
 
-        guard let detectorRange = text.range(of: "private func isDefaultCodexHomeAuthConsumer") else {
-            return XCTFail("Could not locate default CODEX_HOME auth-consumer detector")
+        guard let terminateCodexRange = text.range(of: "private func terminateCodex"),
+              let runningAppsRange = text.range(
+                of: "private func runningCodexApps",
+                range: terminateCodexRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate Codex shutdown function")
         }
-        let detectorBody = text[detectorRange.lowerBound...].prefix(700)
+        let terminateCodexBody = text[terminateCodexRange.lowerBound..<runningAppsRange.lowerBound]
         XCTAssertTrue(
-            detectorBody.contains(#"environmentValue("CODEX_HOME", in: command)"#),
-            "Residual auth consumer detection must inspect CODEX_HOME to avoid killing isolated Codex homes"
+            terminateCodexBody.contains("terminateAllCodexProcesses()"),
+            "Codex.app graceful shutdown failure must fall back to aggressive process termination"
         )
+        // Layer 3: Verify auth is synced during shutdown
         XCTAssertTrue(
-            detectorBody.contains("return true"),
-            "Codex auth consumers without CODEX_HOME must be treated as default ~/.codex consumers"
-        )
-        XCTAssertTrue(
-            detectorBody.contains("standardizedFileURL.path == defaultCodexHomePath"),
-            "Only explicit CODEX_HOME processes pointing at the default ~/.codex should be terminated"
+            terminateCodexBody.contains("authMirrorService.syncActiveAuth()"),
+            "terminateCodex must sync auth between SIGTERM and SIGKILL to capture final token rotation"
         )
 
-        guard let consumerRange = text.range(of: "private func isCodexAuthConsumer"),
-              let envRange = text.range(
-                of: "private func environmentValue",
+        guard let terminatorRange = text.range(of: "private func terminateAllCodexProcesses") else {
+            return XCTFail("Could not locate all-Codex terminator")
+        }
+        let terminatorBody = text[terminatorRange.lowerBound...].prefix(900)
+        XCTAssertTrue(
+            terminatorBody.contains(#"run("/bin/kill", ["-TERM"]"#),
+            "Switching accounts must first terminate Codex processes cleanly"
+        )
+        XCTAssertTrue(
+            terminatorBody.contains(#"run("/bin/kill", ["-KILL"]"#),
+            "Switching accounts must force-kill stubborn Codex processes"
+        )
+
+        guard let processRange = text.range(of: "private func isCodexProcess"),
+              let consumerRange = text.range(
+                of: "private func isCodexAuthConsumer",
+                range: processRange.upperBound..<text.endIndex
+              ) else {
+            return XCTFail("Could not locate Codex process matcher")
+        }
+        let processMatcher = text[processRange.lowerBound..<consumerRange.lowerBound]
+        XCTAssertTrue(
+            processMatcher.contains(#"contains("/applications/codex.app/contents/")"#),
+            "Use in Codex must terminate every Codex.app helper process"
+        )
+
+        guard let envRange = text.range(
+                of: "private func isCodexExecutableCommand",
                 range: consumerRange.upperBound..<text.endIndex
               ) else {
             return XCTFail("Could not locate Codex auth-consumer matcher")
         }
 
         let consumerMatcher = text[consumerRange.lowerBound..<envRange.lowerBound]
-        XCTAssertTrue(consumerMatcher.contains(#"hasPrefix("codex app-server ")"#))
-        XCTAssertTrue(consumerMatcher.contains(#"contains("/codex app-server ")"#))
+        XCTAssertTrue(consumerMatcher.contains(#"contains(" exec ")"#))
         XCTAssertTrue(consumerMatcher.contains(#"contains("/node_repl ")"#))
+
+        let executableMatcher = text[envRange.lowerBound...].prefix(900)
+        XCTAssertTrue(executableMatcher.contains(#"hasPrefix("codex ")"#))
+        XCTAssertTrue(consumerMatcher.contains(#"contains("/codex ")"#))
+        XCTAssertTrue(executableMatcher.contains(#"contains("/codex/codex ")"#))
     }
 
     func testSwitchboardPersistsLatestAuthBeforeNormalTermination() throws {
@@ -183,6 +325,25 @@ final class AuthRefreshGuardTests: XCTestCase {
         XCTAssertTrue(
             text.contains("makeBackupURL(profileStoreURL: profileStoreURL)"),
             "Dedupe backups must follow the injected profile store instead of writing test/custom backups to the live app store"
+        )
+    }
+
+    func testBackgroundTokenRefreshIsNotConfigured() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let mirrorURL = root.appendingPathComponent("Sources/CodexSwitchboard/CodexAuthMirrorService.swift")
+        let text = try String(contentsOf: mirrorURL, encoding: .utf8)
+
+        XCTAssertFalse(
+            text.contains("backgroundRefreshTimer"),
+            "AuthMirrorService must not have a background token refresh timer"
+        )
+        XCTAssertFalse(
+            text.contains("refreshAllProfiles"),
+            "AuthMirrorService must not refresh all profiles periodically"
+        )
+        XCTAssertFalse(
+            text.contains("tokenRefreshService"),
+            "AuthMirrorService must not spend/rotate stored refresh tokens"
         )
     }
 

@@ -284,6 +284,12 @@ private struct MirrorableCapturedProfile {
     }
 
     func canAccept(_ live: StoredCodexAuth) -> Bool {
+        if live.refreshToken != auth.refreshToken,
+           live.idIssuedAt > 0,
+           live.idIssuedAt >= auth.idIssuedAt {
+            return true
+        }
+
         if let liveLastRefresh = live.lastRefreshDate,
            let profileLastRefresh = auth.lastRefreshDate,
            liveLastRefresh < profileLastRefresh.addingTimeInterval(-2) {

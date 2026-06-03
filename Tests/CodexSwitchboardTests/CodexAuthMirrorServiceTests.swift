@@ -226,6 +226,41 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
         XCTAssertEqual(refreshToken(in: profileAuthURL), "fresh-captured")
     }
 
+    func testSyncAcceptsFreshLoginEvenWhenStoredProfileHasNewerLastRefresh() throws {
+        let root = try temporaryDirectory()
+        let liveAuthURL = root.appendingPathComponent("auth.json")
+        let profilesURL = root.appendingPathComponent("profiles", isDirectory: true)
+        let profileURL = profilesURL.appendingPathComponent("personal", isDirectory: true)
+        let profileAuthURL = profileURL.appendingPathComponent("auth.json")
+        try FileManager.default.createDirectory(at: profileURL, withIntermediateDirectories: true)
+        try writeAuth(
+            subject: "sub-1",
+            email: "person@example.com",
+            refreshToken: "stale-captured",
+            lastRefresh: "2026-05-31T15:37:36.542Z",
+            issuedAt: 1_700_000_000,
+            to: profileAuthURL
+        )
+        try AppStorage.writeJSON([:], to: profileURL.appendingPathComponent("meta.json"))
+        try writeAuth(
+            subject: "sub-1",
+            email: "person@example.com",
+            refreshToken: "fresh-login",
+            lastRefresh: "2026-05-30T18:00:23.655Z",
+            issuedAt: 1_800_000_000,
+            to: liveAuthURL
+        )
+
+        let result = CodexAuthMirrorService(
+            authURL: liveAuthURL,
+            profileStoreURL: profilesURL,
+            interval: 30
+        ).syncActiveAuth()
+
+        XCTAssertEqual(result.status, .synced)
+        XCTAssertEqual(refreshToken(in: profileAuthURL), "fresh-login")
+    }
+
     func testLiveAuthWithoutTokenAccountIDUsesIDTokenAccountID() throws {
         let root = try temporaryDirectory()
         let liveAuthURL = root.appendingPathComponent("auth.json")
@@ -356,6 +391,7 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
         accountID: String? = nil,
         refreshToken: String,
         lastRefresh: String = "2026-05-29T00:00:00Z",
+        issuedAt: Int? = nil,
         includeTokenAccountID: Bool = true,
         includeIDTokenAccountID: Bool = true,
         to url: URL
@@ -366,6 +402,7 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
                 subject: subject,
                 email: email,
                 accountID: accountID,
+                issuedAt: issuedAt,
                 includeIDTokenAccountID: includeIDTokenAccountID
             ),
             "refresh_token": refreshToken,
@@ -404,6 +441,7 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
         subject: String,
         email: String,
         accountID: String? = nil,
+        issuedAt: Int? = nil,
         includeIDTokenAccountID: Bool = true
     ) -> String {
         let header = base64URL(["alg": "none"])
@@ -412,6 +450,9 @@ final class CodexAuthMirrorServiceTests: XCTestCase {
             "exp": 1_800_000_000,
             "sub": subject,
         ]
+        if let issuedAt {
+            payload["iat"] = issuedAt
+        }
         if includeIDTokenAccountID, let accountID {
             payload["https://api.openai.com/auth"] = ["chatgpt_account_id": accountID]
         }
