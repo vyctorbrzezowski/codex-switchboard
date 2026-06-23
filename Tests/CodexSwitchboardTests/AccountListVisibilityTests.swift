@@ -73,6 +73,27 @@ final class AccountListVisibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testAccountDisplayAliasIsPresentationOnly() {
+        var account = makeAccount(id: "person@example.com|acc", email: "person@example.com", hasError: false)
+        account.alias = "  Lab Member 01  "
+
+        XCTAssertEqual(account.displayAlias, "Lab Member 01")
+        XCTAssertEqual(account.displayName, "Lab Member 01")
+        XCTAssertEqual(account.email, "person@example.com")
+        XCTAssertEqual(account.accountID, "acc")
+    }
+
+    @MainActor
+    func testAccountSearchMatchesAliasAndEmail() {
+        var account = makeAccount(id: "person@example.com|acc", email: "person@example.com", hasError: false)
+        account.alias = "Lab Member 01"
+
+        XCTAssertTrue(UsageViewModel.matchesSearch(account, searchText: "member 01"))
+        XCTAssertTrue(UsageViewModel.matchesSearch(account, searchText: "person@example"))
+        XCTAssertFalse(UsageViewModel.matchesSearch(account, searchText: "unrelated"))
+    }
+
+    @MainActor
     func testWaitingForResetSortsPaidBeforeFreeThenSoonestReset() {
         let freeSoon = makeAccount(
             id: "free-soon@example.com|acc",

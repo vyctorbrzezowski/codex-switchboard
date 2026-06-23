@@ -28,6 +28,7 @@
 
 - View best-effort Codex quota and usage across all your accounts
 - Group accounts by workspace/team
+- Add local display aliases so personal accounts are easy to identify
 - Instantly see which account is active
 - Switch active accounts with one click
 - Identify invalid or deactivated accounts
@@ -38,6 +39,7 @@
 
 - **Codex Quota Dashboard** — Best-effort usage tracking across all linked accounts
 - **Workspace Grouping** — Accounts organized by team/workspace
+- **Display Aliases** — Local-only account labels for easier scanning while preserving the real email for auth and copy actions
 - **Account Health** — Visual indicators for invalid or deactivated accounts
 - **One-Click Switching** — Change your active Codex account instantly
 - **Automatic Token Refresh** — Expired access tokens are refreshed locally when possible before asking you to re-login

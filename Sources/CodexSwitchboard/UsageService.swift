@@ -80,6 +80,7 @@ final class UsageService: Sendable {
                      ?? (usage["email"] as? String)
                      ?? (p["accountId"] as? String)
                      ?? key.components(separatedBy: ":").last ?? key
+            let alias = Account.normalizedAlias(p["alias"] as? String)
 
             let aid = (usage["account_id"] as? String) ?? (p["accountId"] as? String) ?? ""
             let dedup = Self.dedupID(email: email, accountID: aid, profileKey: key)
@@ -131,6 +132,7 @@ final class UsageService: Sendable {
                 id: dedup,
                 profileKey: key,
                 email: email,
+                alias: alias,
                 workspace: workspaceName,
                 plan: planType ?? "?",
                 sessionFree: max(0, 100 - h5),

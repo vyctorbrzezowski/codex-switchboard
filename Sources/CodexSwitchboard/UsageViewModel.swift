@@ -78,7 +78,13 @@ final class UsageViewModel: ObservableObject {
 
     private var searchFiltered: [Account] {
         guard !searchText.isEmpty else { return visibleAccounts }
-        return visibleAccounts.filter { $0.email.localizedCaseInsensitiveContains(searchText) }
+        return visibleAccounts.filter { Self.matchesSearch($0, searchText: searchText) }
+    }
+
+    static func matchesSearch(_ account: Account, searchText: String) -> Bool {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        return account.searchText.localizedCaseInsensitiveContains(trimmed)
     }
 
     /// Smart score for default ordering of active rows.
@@ -327,6 +333,24 @@ final class UsageViewModel: ObservableObject {
         reloggingAccountID = nil
         isAddingAccount = false
         accountActionError = nil
+    }
+
+    func setAlias(_ alias: String?, for account: Account) {
+        guard let profileKey = account.profileKey else {
+            accountActionError = "Account has no local profile to label."
+            return
+        }
+
+        do {
+            let normalizedAlias = Account.normalizedAlias(alias)
+            try AccountProfileStore.updateAlias(profileKey: profileKey, alias: normalizedAlias)
+            if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+                accounts[index].alias = normalizedAlias
+                AccountSnapshotStore.save(accounts: accounts, lastRefresh: lastRefresh)
+            }
+        } catch {
+            accountActionError = error.localizedDescription
+        }
     }
 
     func switchCodex(to account: Account) {

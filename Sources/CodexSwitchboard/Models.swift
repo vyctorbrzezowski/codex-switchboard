@@ -7,6 +7,7 @@ struct Account: Identifiable, Equatable, Codable {
     let id: String          // dedup key: "email|accountId"
     let profileKey: String?
     let email: String
+    var alias: String? = nil
     let workspace: String   // team name or plan type
     let plan: String
     let sessionFree: Double // 0-100 (% remaining)
@@ -19,6 +20,32 @@ struct Account: Identifiable, Equatable, Codable {
 
     var emailPrefix: String {
         email.components(separatedBy: "@").first ?? email
+    }
+
+    var displayAlias: String? {
+        Account.normalizedAlias(alias)
+    }
+
+    var displayName: String {
+        displayAlias ?? email
+    }
+
+    var hasDisplayAlias: Bool {
+        displayAlias != nil
+    }
+
+    var searchText: String {
+        [displayAlias, email, workspace, plan]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+
+    static func normalizedAlias(_ alias: String?) -> String? {
+        guard let trimmed = alias?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     var accountID: String {

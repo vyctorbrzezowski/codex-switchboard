@@ -170,6 +170,26 @@ enum AccountProfileStore {
         }
     }
 
+    static func updateAlias(profileKey: String, alias: String?) throws {
+        try CodexAuthFileLock.withLock {
+            var root = accountsRoot()
+            var profiles = root["profiles"] as? [String: Any] ?? [:]
+            guard var entry = profiles[profileKey] as? [String: Any] else {
+                throw Error.missingProfile(profileKey)
+            }
+
+            if let alias = Account.normalizedAlias(alias) {
+                entry["alias"] = alias
+            } else {
+                entry.removeValue(forKey: "alias")
+            }
+
+            profiles[profileKey] = entry
+            root["profiles"] = profiles
+            try AppStorage.writeJSON(root, to: AppStorage.accountsURL, permissions: 0o600)
+        }
+    }
+
     static func remove(profileKeys: Set<String>) throws {
         guard !profileKeys.isEmpty else { return }
         try CodexAuthFileLock.withLock {

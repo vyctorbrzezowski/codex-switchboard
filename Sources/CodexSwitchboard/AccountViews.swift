@@ -1,6 +1,26 @@
 import SwiftUI
 import AppKit
 
+private enum AccountAliasPrompt {
+    static func edit(account: Account, save: (String?) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = account.hasDisplayAlias ? "Edit Account Alias" : "Set Account Alias"
+        alert.informativeText = account.email
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        textField.stringValue = account.displayAlias ?? ""
+        textField.placeholderString = "Display alias"
+        alert.accessoryView = textField
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            save(Account.normalizedAlias(textField.stringValue))
+        }
+    }
+}
+
 struct AccountListView: View {
     @ObservedObject var vm: UsageViewModel
 
@@ -109,7 +129,8 @@ struct AccountListView: View {
             relogin: { vm.relogin(acc) },
             cancelRelogin: { vm.cancelRelogin() },
             switchToCodex: { vm.switchCodex(to: acc) },
-            removeAccount: { vm.removeAccount(acc) }
+            removeAccount: { vm.removeAccount(acc) },
+            setAlias: { vm.setAlias($0, for: acc) }
         )
     }
 }
@@ -214,6 +235,7 @@ struct FreeWaitingGroupHeader: View {
 
 struct AccountRow: View {
     let account: Account
+    var setAlias: (String?) -> Void = { _ in }
     @State private var hovered = false
 
     private var exhausted: Bool { account.isWeeklyExhausted }
@@ -224,10 +246,7 @@ struct AccountRow: View {
                 Circle()
                     .fill(Color.gray.opacity(0.3))
                     .frame(width: 6, height: 6)
-                Text(account.email)
-                    .font(.system(size: 13))
-                    .foregroundColor(.primary)
-                    .lineLimit(1).truncationMode(.middle)
+                accountIdentity
                 Spacer()
                 WorkspaceChip(ws: account.workspace, compact: false)
             }
@@ -257,10 +276,43 @@ struct AccountRow: View {
         .background(hovered ? Color.primary.opacity(0.06) : .clear)
         .onHover { hovered = $0 }
         .contextMenu {
+            Button(account.hasDisplayAlias ? "Edit Alias..." : "Set Alias...") {
+                AccountAliasPrompt.edit(account: account, save: setAlias)
+            }
+            if account.hasDisplayAlias {
+                Button("Clear Alias") {
+                    setAlias(nil)
+                }
+            }
+            Divider()
             Button("Copy email") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(account.email, forType: .string)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var accountIdentity: some View {
+        if account.hasDisplayAlias {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(account.displayName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(account.email)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        } else {
+            Text(account.email)
+                .font(.system(size: 13))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }
@@ -349,12 +401,16 @@ struct AccountCompactRow: View {
     let cancelRelogin: () -> Void
     let switchToCodex: () -> Void
     let removeAccount: () -> Void
+    let setAlias: (String?) -> Void
     @State private var hovered = false
 
     private var exhausted: Bool { account.isWeeklyExhausted }
     private var showsFullInformation: Bool { informationMode == .complete }
     private var showsActionControl: Bool { needsRelogin || isRelogging || isSwitchingToCodex || canShowSwapControl }
-    private var rowHeight: CGFloat { showsFullInformation ? 34 : 28 }
+    private var rowHeight: CGFloat {
+        if showsFullInformation, account.hasDisplayAlias { return 40 }
+        return showsFullInformation ? 34 : 28
+    }
     private var canShowSwapControl: Bool {
         showsCodexControls
             && !isActiveInCodex
@@ -376,11 +432,7 @@ struct AccountCompactRow: View {
             HStack(alignment: .center, spacing: layout.spacing) {
                 leadingAccountControl
 
-                Text(account.email)
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                accountIdentityView
                     .frame(width: layout.emailWidth, alignment: .leading)
 
                 if showsFullInformation {
@@ -432,10 +484,53 @@ struct AccountCompactRow: View {
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .contextMenu {
+            Button(account.hasDisplayAlias ? "Edit Alias..." : "Set Alias...") {
+                AccountAliasPrompt.edit(account: account, save: setAlias)
+            }
+            if account.hasDisplayAlias {
+                Button("Clear Alias") {
+                    setAlias(nil)
+                }
+            }
+            Divider()
             Button("Copy email") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(account.email, forType: .string)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var accountIdentityView: some View {
+        if account.hasDisplayAlias {
+            if showsFullInformation {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(account.displayName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(account.email)
+                        .font(.system(size: 8.5))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .help(account.email)
+            } else {
+                Text(account.displayName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(account.email)
+            }
+        } else {
+            Text(account.email)
+                .font(.system(size: 11))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
     }
 

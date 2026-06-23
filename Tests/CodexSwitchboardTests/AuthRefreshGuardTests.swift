@@ -295,7 +295,7 @@ final class AuthRefreshGuardTests: XCTestCase {
         let storageURL = root.appendingPathComponent("Sources/CodexSwitchboard/AppStorage.swift")
         let text = try String(contentsOf: storageURL, encoding: .utf8)
 
-        for method in ["func upsert(", "func updateTokens(", "func remove(profileKeys:"] {
+        for method in ["func upsert(", "func updateTokens(", "func updateAlias(", "func remove(profileKeys:"] {
             guard let methodRange = text.range(of: method) else {
                 XCTFail("Could not locate \(method) in AppStorage.swift")
                 continue
