@@ -226,15 +226,26 @@ final class CodexSurfaceService {
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-axo", "command="]
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexSwitchboardSurface-\(UUID().uuidString).log")
+        guard fileManager.createFile(atPath: outputURL.path, contents: nil),
+              let outputHandle = FileHandle(forWritingAtPath: outputURL.path) else {
+            return []
+        }
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
+        defer {
+            try? outputHandle.close()
+            try? fileManager.removeItem(at: outputURL)
+        }
+
+        process.standardOutput = outputHandle
+        process.standardError = outputHandle
 
         do {
             try process.run()
             process.waitUntilExit()
-            try? pipe.fileHandleForWriting.close()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            try outputHandle.synchronize()
+            let data = (try? Data(contentsOf: outputURL)) ?? Data()
             return (String(data: data, encoding: .utf8) ?? "")
                 .split(separator: "\n")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
