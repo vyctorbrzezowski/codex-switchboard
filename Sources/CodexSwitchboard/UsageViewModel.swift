@@ -16,6 +16,8 @@ final class UsageViewModel: ObservableObject {
     @Published var accountActionError: String?
     @Published var codexLoginStatus: CodexLoginStatus = .empty
     @Published var activeCodexProfileKey: String?
+    @Published var codexSurfaceStatuses: [CodexSurfaceStatus] = []
+    @Published var selectedCodexSurface: CodexSurfaceKind = .desktop
     @Published var isCodexInstalled = false
     @Published var lastRefresh: Date?
     @Published var error: String?
@@ -43,6 +45,7 @@ final class UsageViewModel: ObservableObject {
     private let service = UsageService()
     private let captureService = CodexAccountCaptureService()
     private let switchService = CodexAccountSwitchService()
+    private let surfaceService = CodexSurfaceService()
     private let removalService = LocalAccountRemovalService()
     private var refreshTimer: Timer?
     private var reloginTask: Task<Void, Never>?
@@ -262,12 +265,34 @@ final class UsageViewModel: ObservableObject {
     }
 
     func isActiveInCodex(_ account: Account) -> Bool {
-        guard isCodexInstalled else { return false }
-        guard let activeCodexProfileKey,
+        guard selectedSurfaceStatus?.detected == true else { return false }
+        guard let activeCodexProfileKey = activeCodexProfileKey(for: selectedCodexSurface),
               let profileKey = account.profileKey else {
             return false
         }
         return activeCodexProfileKey == profileKey
+    }
+
+    var canShowDesktopSwitchControls: Bool {
+        selectedCodexSurface == .desktop && isCodexInstalled
+    }
+
+    var availableCodexSurfaces: [CodexSurfaceStatus] {
+        codexSurfaceStatuses.filter(\.detected)
+    }
+
+    var selectedSurfaceStatus: CodexSurfaceStatus? {
+        availableCodexSurfaces.first { $0.kind == selectedCodexSurface }
+            ?? availableCodexSurfaces.first
+    }
+
+    func selectCodexSurface(_ kind: CodexSurfaceKind) {
+        guard availableCodexSurfaces.contains(where: { $0.kind == kind }) else { return }
+        selectedCodexSurface = kind
+    }
+
+    func activeCodexProfileKey(for surface: CodexSurfaceKind) -> String? {
+        codexSurfaceStatuses.first { $0.kind == surface }?.activeProfileKey
     }
 
     var hasPendingAccountAction: Bool {
@@ -340,7 +365,10 @@ final class UsageViewModel: ObservableObject {
     }
 
     func switchCodex(to account: Account) {
-        guard isCodexInstalled, !hasPendingAccountAction, !needsRelogin(account) else { return }
+        guard selectedCodexSurface == .desktop,
+              isCodexInstalled,
+              !hasPendingAccountAction,
+              !needsRelogin(account) else { return }
         switchingAccountID = account.id
         accountActionError = nil
 
@@ -349,6 +377,7 @@ final class UsageViewModel: ObservableObject {
                 let result = try switchService.switchToAccount(account)
                 await MainActor.run {
                     self.activeCodexProfileKey = result.sourceProfileKey
+                    self.refreshCodexAvailability()
                     self.switchingAccountID = nil
                     self.switchTask = nil
                 }
@@ -421,8 +450,13 @@ final class UsageViewModel: ObservableObject {
     // MARK: - Timer
 
     private func refreshCodexAvailability() {
-        isCodexInstalled = switchService.isCodexInstalled
-        activeCodexProfileKey = isCodexInstalled ? switchService.currentSourceProfileKey() : nil
+        codexSurfaceStatuses = surfaceService.statuses()
+        isCodexInstalled = codexSurfaceStatuses.contains { $0.kind == .desktop && $0.detected }
+        activeCodexProfileKey = activeCodexProfileKey(for: .desktop)
+        if !availableCodexSurfaces.contains(where: { $0.kind == selectedCodexSurface }),
+           let firstSurface = availableCodexSurfaces.first?.kind {
+            selectedCodexSurface = firstSurface
+        }
     }
 
     private func startTimer() {
