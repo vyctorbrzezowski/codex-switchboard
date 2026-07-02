@@ -46,5 +46,6 @@ final class CodexSwitchboardCLITests: XCTestCase {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum CodexSwitchboardCommand {
@@ -415,9 +416,11 @@ private final class CLISurfaceService {
 
 private final class CLIAccountStore {
     private let paths: SwitchboardPaths
+    private let capturedProfiles: CapturedProfileStore
 
     init(paths: SwitchboardPaths) {
         self.paths = paths
+        capturedProfiles = CapturedProfileStore(paths: paths)
     }
 
     func accounts() -> [AccountPayload] {
@@ -432,7 +435,17 @@ private final class CLIAccountStore {
               let snapshot = try? JSONDecoder().decode(AccountSnapshot.self, from: data) else {
             return nil
         }
-        return snapshot.accounts.compactMap(AccountPayload.init(snapshot:))
+        let snapshotRefreshDate = snapshot.lastRefreshEpoch.map {
+            Date(timeIntervalSince1970: $0)
+        } ?? Date()
+        return snapshot.accounts.compactMap { account in
+            guard let profileKey = account.profileKey else { return nil }
+            return AccountPayload(
+                snapshot: account,
+                snapshotRefreshDate: snapshotRefreshDate,
+                hasCapturedAuth: capturedProfiles.hasProfile(sourceProfileKey: profileKey)
+            )
+        }
     }
 
     private func profileFallbackAccounts() -> [AccountPayload] {
@@ -476,6 +489,13 @@ private final class CLISwitchService {
         try validateCapturedProfile(profile)
 
         let surfaces = surfaceService.statuses(scope: scope)
+        let undetected = surfaces.filter { !$0.detected }
+        if let firstUndetected = undetected.first {
+            throw CLIError.surfaceNotDetected(
+                surface: firstUndetected.kind.rawValue,
+                jsonPreferred: true
+            )
+        }
         let unsupported = surfaces.filter { !$0.supportsFileSwitching }
         if let firstUnsupported = unsupported.first {
             throw CLIError.unsupportedMode(
@@ -495,6 +515,7 @@ private final class CLISwitchService {
         }
 
         var written: [SwitchSurfacePayload] = []
+        var destinations: [(surface: SurfaceStatusPayload, url: URL)] = []
         var seenDestinations = Set<String>()
         for surface in surfaces {
             let destination = URL(fileURLWithPath: surface.authStorePath)
@@ -507,10 +528,42 @@ private final class CLISwitchService {
                 ))
                 continue
             }
-            try backupLiveAuth(at: destination, target: profile)
-            try copyReplacing(source: profile.authURL, destination: destination)
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
             seenDestinations.insert(destination.path)
+            destinations.append((surface, destination))
+        }
+
+        let sourceData = try Data(contentsOf: profile.authURL)
+        let previousAuth = destinations.reduce(into: [String: Data?]()) { result, destination in
+            result[destination.url.path] = try? Data(contentsOf: destination.url)
+        }
+        var mutatedDestinations: [URL] = []
+        do {
+            for (surface, destination) in destinations {
+                try backupLiveAuth(at: destination, target: profile)
+                try paths.writeData(sourceData, to: destination, permissions: 0o600)
+                mutatedDestinations.append(destination)
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+                written.append(SwitchSurfacePayload(
+                    kind: surface.kind,
+                    authStorePath: destination.path,
+                    authStoreMode: surface.authStoreMode,
+                    sharedAuthStore: surface.sharedAuthStore
+                ))
+            }
+        } catch {
+            rollback(destinations: mutatedDestinations, previousAuth: previousAuth)
+            throw error
+        }
+
+        for surface in surfaces {
+            let destination = URL(fileURLWithPath: surface.authStorePath)
+            guard seenDestinations.contains(destination.path),
+                  destinations.contains(where: { $0.url.path == destination.path }) else {
+                continue
+            }
+            if written.contains(where: { $0.kind == surface.kind }) {
+                continue
+            }
             written.append(SwitchSurfacePayload(
                 kind: surface.kind,
                 authStorePath: destination.path,
@@ -526,6 +579,16 @@ private final class CLISwitchService {
             accountID: profile.accountID,
             surfaces: written
         )
+    }
+
+    private func rollback(destinations: [URL], previousAuth: [String: Data?]) {
+        for destination in destinations.reversed() {
+            if let previous = previousAuth[destination.path] ?? nil {
+                try? paths.writeData(previous, to: destination, permissions: 0o600)
+            } else {
+                try? fileManager.removeItem(at: destination)
+            }
+        }
     }
 
     func consumerProcesses() -> [ProcessInfoPayload] {
@@ -658,6 +721,10 @@ private final class CapturedProfileStore {
         }
     }
 
+    func hasProfile(sourceProfileKey: String) -> Bool {
+        profiles().contains { $0.sourceProfileKey == sourceProfileKey }
+    }
+
     private func profiles() -> [CapturedProfile] {
         guard let entries = try? fileManager.contentsOfDirectory(
             at: paths.profilesURL,
@@ -744,6 +811,7 @@ private struct StoredAuth {
 }
 
 private struct AccountSnapshot: Decodable {
+    let lastRefreshEpoch: TimeInterval?
     let accounts: [SnapshotAccount]
 }
 
@@ -813,19 +881,25 @@ private struct AccountPayload: Codable {
         self.score = score
     }
 
-    init?(snapshot: SnapshotAccount) {
+    init?(
+        snapshot: SnapshotAccount,
+        snapshotRefreshDate: Date,
+        hasCapturedAuth: Bool
+    ) {
         guard let profileKey = snapshot.profileKey, !profileKey.isEmpty else { return nil }
         let usable = !snapshot.hasError
             && snapshot.sessionFree > 0.001
             && snapshot.weeklyFree > 0.001
+            && hasCapturedAuth
         let isFree = snapshot.plan.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "free"
         let nextReset = Self.nextResetDate(
             sessionFree: snapshot.sessionFree,
             weeklyFree: snapshot.weeklyFree,
             sessionResetSeconds: snapshot.sessionResetSeconds,
-            weeklyResetSeconds: snapshot.weeklyResetSeconds
+            weeklyResetSeconds: snapshot.weeklyResetSeconds,
+            baseDate: snapshotRefreshDate
         )
-        let needsRelogin = Self.needsRelogin(snapshot.errorMessage)
+        let needsRelogin = Self.needsRelogin(snapshot.errorMessage) || !hasCapturedAuth
         let baseScore = snapshot.sessionFree * 0.6 + snapshot.weeklyFree * 0.4
         let penalty = (snapshot.hasError ? 1_000.0 : 0) + (isFree ? 100.0 : 0)
         self.init(
@@ -847,7 +921,8 @@ private struct AccountPayload: Codable {
         sessionFree: Double,
         weeklyFree: Double,
         sessionResetSeconds: Double,
-        weeklyResetSeconds: Double
+        weeklyResetSeconds: Double,
+        baseDate: Date
     ) -> Date? {
         let seconds: Double
         if sessionFree <= 0.001, sessionResetSeconds > 0 {
@@ -861,7 +936,7 @@ private struct AccountPayload: Codable {
         } else {
             return nil
         }
-        return Date().addingTimeInterval(seconds)
+        return baseDate.addingTimeInterval(seconds)
     }
 
     private static func needsRelogin(_ errorMessage: String?) -> Bool {
@@ -1000,6 +1075,7 @@ private struct ErrorPayload: Codable {
 
 private enum CLIError: LocalizedError {
     case usage(String, jsonPreferred: Bool)
+    case surfaceNotDetected(surface: String, jsonPreferred: Bool)
     case consumersRunning([String], jsonPreferred: Bool)
     case unsupportedMode(surface: String, mode: String, path: String, jsonPreferred: Bool)
     case failure(message: String, jsonPreferred: Bool)
@@ -1008,6 +1084,8 @@ private enum CLIError: LocalizedError {
         switch self {
         case let .usage(message, _):
             return message
+        case let .surfaceNotDetected(surface, _):
+            return "Requested Codex surface is not detected: \(surface)."
         case let .consumersRunning(processes, _):
             return "Codex consumers are running; pass --stop-consumers to terminate them before switching. \(processes.joined(separator: "; "))"
         case let .unsupportedMode(surface, mode, path, _):
@@ -1021,6 +1099,8 @@ private enum CLIError: LocalizedError {
         switch self {
         case .usage:
             return "usage"
+        case .surfaceNotDetected:
+            return "surface_not_detected"
         case .consumersRunning:
             return "consumers_running"
         case .unsupportedMode:
@@ -1034,7 +1114,7 @@ private enum CLIError: LocalizedError {
         switch self {
         case .usage:
             return 64
-        case .consumersRunning, .unsupportedMode:
+        case .surfaceNotDetected, .consumersRunning, .unsupportedMode:
             return 2
         case .failure:
             return 1
@@ -1044,6 +1124,7 @@ private enum CLIError: LocalizedError {
     var jsonPreferred: Bool {
         switch self {
         case let .usage(_, value),
+             let .surfaceNotDetected(_, value),
              let .consumersRunning(_, value),
              let .unsupportedMode(_, _, _, value),
              let .failure(_, value):
