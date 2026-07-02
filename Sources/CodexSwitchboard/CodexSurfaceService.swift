@@ -81,10 +81,11 @@ final class CodexSurfaceService {
     private func desktopStatus() -> CodexSurfaceStatus {
         let codexHome = defaultCodexHome()
         let activeAuth = activeAuth(in: codexHome)
+        let running = isDesktopRunning
         return CodexSurfaceStatus(
             kind: .desktop,
-            detected: isDesktopDetected,
-            running: isDesktopRunning,
+            detected: isDesktopDetected(running: running),
+            running: running,
             codexHomePath: codexHome.standardizedFileURL.path,
             authStoreMode: authStoreMode(in: codexHome),
             activeProfileKey: activeProfileKey(for: activeAuth),
@@ -97,10 +98,11 @@ final class CodexSurfaceService {
     private func cliStatus() -> CodexSurfaceStatus {
         let codexHome = cliCodexHome()
         let activeAuth = activeAuth(in: codexHome)
+        let running = isCLIRunning
         return CodexSurfaceStatus(
             kind: .cli,
-            detected: cliExecutablePath() != nil,
-            running: isCLIRunning,
+            detected: cliExecutablePath() != nil || running,
+            running: running,
             codexHomePath: codexHome.standardizedFileURL.path,
             authStoreMode: authStoreMode(in: codexHome),
             activeProfileKey: activeProfileKey(for: activeAuth),
@@ -110,8 +112,8 @@ final class CodexSurfaceService {
         )
     }
 
-    private var isDesktopDetected: Bool {
-        fileManager.fileExists(atPath: appURL.path) || isDesktopRunning
+    private func isDesktopDetected(running: Bool) -> Bool {
+        fileManager.fileExists(atPath: appURL.path) || running
     }
 
     private var isDesktopRunning: Bool {

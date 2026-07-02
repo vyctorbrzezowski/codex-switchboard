@@ -273,6 +273,10 @@ final class UsageViewModel: ObservableObject {
         return activeCodexProfileKey == profileKey
     }
 
+    var canShowDesktopSwitchControls: Bool {
+        selectedCodexSurface == .desktop && isCodexInstalled
+    }
+
     var availableCodexSurfaces: [CodexSurfaceStatus] {
         codexSurfaceStatuses.filter(\.detected)
     }
@@ -361,7 +365,10 @@ final class UsageViewModel: ObservableObject {
     }
 
     func switchCodex(to account: Account) {
-        guard isCodexInstalled, !hasPendingAccountAction, !needsRelogin(account) else { return }
+        guard selectedCodexSurface == .desktop,
+              isCodexInstalled,
+              !hasPendingAccountAction,
+              !needsRelogin(account) else { return }
         switchingAccountID = account.id
         accountActionError = nil
 
@@ -370,6 +377,7 @@ final class UsageViewModel: ObservableObject {
                 let result = try switchService.switchToAccount(account)
                 await MainActor.run {
                     self.activeCodexProfileKey = result.sourceProfileKey
+                    self.refreshCodexAvailability()
                     self.switchingAccountID = nil
                     self.switchTask = nil
                 }
