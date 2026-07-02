@@ -233,6 +233,7 @@ final class CodexSurfaceService {
         do {
             try process.run()
             process.waitUntilExit()
+            try? pipe.fileHandleForWriting.close()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return (String(data: data, encoding: .utf8) ?? "")
                 .split(separator: "\n")
