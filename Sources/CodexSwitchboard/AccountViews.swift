@@ -106,6 +106,7 @@ struct AccountListView: View {
             isRemoving: vm.isRemoving(acc),
             isRemoveBlocked: vm.hasPendingAccountAction && !vm.isRemoving(acc),
             informationMode: vm.informationMode,
+            resetTextScale: vm.resetTextScale,
             relogin: { vm.relogin(acc) },
             cancelRelogin: { vm.cancelRelogin() },
             switchToCodex: { vm.switchCodex(to: acc) },
@@ -267,7 +268,7 @@ struct AccountRow: View {
 
 // MARK: - Compact Row
 
-private enum CompactRowLayout {
+enum CompactRowLayout {
     static let horizontalPadding: CGFloat = 12
     static let emailMinWidth: CGFloat = 160
     static let actionWidth: CGFloat = 96
@@ -286,16 +287,19 @@ private enum CompactRowLayout {
     static func metrics(
         totalWidth: CGFloat,
         showsFullInformation: Bool,
-        showsActionControl: Bool
+        showsActionControl: Bool,
+        resetTextScale: CGFloat
     ) -> Metrics {
         let spacing: CGFloat = showsFullInformation ? 4 : 8
         let contentWidth = max(0, totalWidth - horizontalPadding * 2)
+        let readableScale = min(max(resetTextScale, 0.8), 2)
         guard showsFullInformation else {
             let metricWidth: CGFloat = 66
-            let fixedWidth = actionWidth + metricWidth * 2 + spacing * 4 + 16
+            let statusWidth = ceil((metricWidth * 2 + spacing) * readableScale)
+            let fixedWidth = 16 + actionWidth + statusWidth + spacing * 3
             return Metrics(
                 spacing: spacing,
-                emailWidth: max(emailMinWidth, contentWidth - fixedWidth),
+                emailWidth: max(0, contentWidth - fixedWidth),
                 workspaceWidth: 0,
                 metricWidth: metricWidth,
                 sessionResetWidth: 0,
@@ -307,9 +311,9 @@ private enum CompactRowLayout {
 
         let workspaceWidth = min(64, max(44, contentWidth * 0.11))
         let metricWidth = min(66, max(58, contentWidth * 0.11))
-        let sessionResetWidth: CGFloat = 34
-        let weeklyResetWidth: CGFloat = 64
-        let planCycleWidth: CGFloat = 32
+        let sessionResetWidth: CGFloat = ceil(34 * readableScale)
+        let weeklyResetWidth: CGFloat = ceil(64 * readableScale)
+        let planCycleWidth: CGFloat = ceil(32 * readableScale)
         let swapControlWidth: CGFloat = actionWidth
         let fixedWidth = 16
             + workspaceWidth
@@ -322,7 +326,7 @@ private enum CompactRowLayout {
 
         return Metrics(
             spacing: spacing,
-            emailWidth: max(emailMinWidth, contentWidth - fixedWidth),
+            emailWidth: max(0, contentWidth - fixedWidth),
             workspaceWidth: workspaceWidth,
             metricWidth: metricWidth,
             sessionResetWidth: sessionResetWidth,
@@ -345,6 +349,7 @@ struct AccountCompactRow: View {
     let isRemoving: Bool
     let isRemoveBlocked: Bool
     let informationMode: AccountInformationMode
+    let resetTextScale: CGFloat
     let relogin: () -> Void
     let cancelRelogin: () -> Void
     let switchToCodex: () -> Void
@@ -354,7 +359,8 @@ struct AccountCompactRow: View {
     private var exhausted: Bool { account.isWeeklyExhausted }
     private var showsFullInformation: Bool { informationMode == .complete }
     private var showsActionControl: Bool { needsRelogin || isRelogging || isSwitchingToCodex || canShowSwapControl }
-    private var rowHeight: CGFloat { showsFullInformation ? 34 : 28 }
+    private var resetFontSize: CGFloat { 10 * resetTextScale }
+    private var rowHeight: CGFloat { ceil((showsFullInformation ? 34 : 28) * max(1, min(resetTextScale, 1.6))) }
     private var canShowSwapControl: Bool {
         showsCodexControls
             && !isActiveInCodex
@@ -368,11 +374,13 @@ struct AccountCompactRow: View {
             let layout = CompactRowLayout.metrics(
                 totalWidth: proxy.size.width,
                 showsFullInformation: showsFullInformation,
-                showsActionControl: showsActionControl
+                showsActionControl: showsActionControl,
+                resetTextScale: resetTextScale
             )
+            let resetWidthScale = max(1, min(resetTextScale, 2))
             let freeResetWidth = showsFullInformation
                 ? layout.metricWidth * 2 + layout.sessionResetWidth + layout.weeklyResetWidth + layout.planCycleWidth + layout.spacing * 2 + 4
-                : layout.metricWidth * 2 + layout.spacing
+                : ceil((layout.metricWidth * 2 + layout.spacing) * resetWidthScale)
             HStack(alignment: .center, spacing: layout.spacing) {
                 leadingAccountControl
 
@@ -505,7 +513,7 @@ struct AccountCompactRow: View {
                 Color.clear.frame(width: width, height: 1)
             } else {
                 Text(ResetFormatter.timeOnly(seconds: account.sessionResetSeconds))
-                    .font(.system(size: 10))
+                    .font(.system(size: resetFontSize))
                     .monospacedDigit()
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -522,7 +530,7 @@ struct AccountCompactRow: View {
             if let text = PlanCycleFormatter.daysText(for: account),
                let date = account.planRenewalDate {
                 Text(text)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: resetFontSize, weight: .semibold))
                     .monospacedDigit()
                     .foregroundColor(Color(hex: "FF453A"))
                     .lineLimit(1)
@@ -547,7 +555,7 @@ struct AccountCompactRow: View {
                     .foregroundColor(Color(hex: "FF9F0A"))
             }
             Text(weeklyStatusText)
-                .font(.system(size: 10))
+                .font(.system(size: resetFontSize))
                 .foregroundColor(weeklyStatusColor)
         }
         .lineLimit(1)
@@ -681,7 +689,7 @@ private extension AccountCompactRow {
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundColor(.secondary)
             Text("Free resets \(ResetFormatter.formatFreeReturn(seconds: account.freePlanResetSeconds))")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: resetFontSize, weight: .semibold))
                 .monospacedDigit()
                 .foregroundColor(.secondary)
                 .lineLimit(1)

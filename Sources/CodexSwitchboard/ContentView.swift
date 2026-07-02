@@ -141,6 +141,39 @@ struct HeaderView: View {
             .disabled(vm.hasPendingAccountAction && !vm.isAddingAccount)
             .help(vm.isAddingAccount ? "Cancel" : "Add account")
 
+            Menu {
+                Picker(
+                    "Reset text size",
+                    selection: Binding(
+                        get: { vm.resetTextScalePercent },
+                        set: { vm.setResetTextScale(percent: $0) }
+                    )
+                ) {
+                    Text("S 100%").tag(100)
+                    Text("M 125%").tag(125)
+                    Text("L 150%").tag(150)
+                }
+                Divider()
+                Button("Smaller") {
+                    vm.adjustResetTextScale(by: -ResetTextScale.stepPercent)
+                }
+                .disabled(vm.resetTextScalePercent <= ResetTextScale.minimumPercent)
+                Button("Larger") {
+                    vm.adjustResetTextScale(by: ResetTextScale.stepPercent)
+                }
+                .disabled(vm.resetTextScalePercent >= ResetTextScale.maximumPercent)
+                Button("Reset to 100%") {
+                    vm.setResetTextScale(percent: ResetTextScale.defaultPercent)
+                }
+            } label: {
+                Image(systemName: "textformat.size")
+                    .font(.system(size: 13))
+                    .foregroundColor(vm.resetTextScalePercent == ResetTextScale.defaultPercent ? .secondary : .primary)
+                    .frame(width: 28, height: 22)
+            }
+            .menuStyle(.borderlessButton)
+            .help("Reset text size \(vm.resetTextScalePercent)%")
+
             Button {
                 vm.toggleInformationMode()
             } label: {
