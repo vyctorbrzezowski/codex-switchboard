@@ -2,33 +2,6 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
-## 1.0.9-beta.6 - 2026-06-03
-
-- Made account switching terminate Codex.app helpers, Codex app-server, Codex exec, and node_repl processes before replacing live auth.
-- Backed up the active `~/.codex/auth.json` before each switch so the previous live auth can be recovered.
-- Revalidated the destination profile identity immediately before copying it into live Codex auth.
-- Allowed the mirror to accept a newly issued login token even when old local metadata has a newer `last_refresh` timestamp.
-- Strengthened tests that guard against refresh-token grant paths and background token refresh services.
-
-## 1.0.9-beta.3 - 2026-05-31
-
-- Closed the remaining account-switch race by terminating default `~/.codex` Codex app-server and node_repl auth consumers before replacing live auth.
-- Treated Codex auth consumers without an explicit `CODEX_HOME` as default `~/.codex` consumers, matching Codex's own fallback behavior.
-- Added guard coverage so future switches keep closing residual auth consumers, wait for SQLite locks, and avoid reintroducing refresh-token grants.
-
-## 1.0.9-beta.2 - 2026-05-30
-
-- Fixed `Use in Codex` hanging forever after Codex closed when the residual-process scan produced more output than its pipe buffer.
-- Captured subprocess output through private temporary files and added a 10-second timeout so account switching returns an error instead of deadlocking.
-
-## 1.0.9-beta.1 - 2026-05-30
-
-- Hardened `Use in Codex` so Switchboard stops Codex/app-server auth consumers before replacing the active auth file.
-- Replaced remove-then-write auth updates with atomic replacements so `auth.json` does not temporarily disappear during switches or mirrors.
-- Mirrored fresh Codex auth into every captured duplicate for the same identity instead of skipping ambiguous duplicate profiles.
-- Avoided creating stale `accounts.json` entries when a duplicate captured profile has an old source key.
-- Detected the active Codex account by matching token values instead of comparing whole JSON files, which can differ only by local metadata.
-
 ## 1.0.8 - 2026-05-29
 
 - Removed every `grant_type=refresh_token` path from Switchboard; the app now never spends refresh tokens.

@@ -14,19 +14,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let removedProfileKeys = try? CapturedProfileDedupeService.removeAllDuplicates(),
-           !removedProfileKeys.isEmpty {
-            try? AccountProfileStore.remove(profileKeys: removedProfileKeys)
-        }
         authMirrorService.start()
         setupStatusItem()
         setupPopover()
         viewModel.refresh()
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        _ = authMirrorService.syncActiveAuth()
-        authMirrorService.stop()
     }
 
     // MARK: - Status Item

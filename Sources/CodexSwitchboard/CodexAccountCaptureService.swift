@@ -1,6 +1,5 @@
 import AppKit
 import CryptoKit
-import Darwin
 import Foundation
 import Network
 import Security
@@ -19,7 +18,6 @@ enum CodexAccountCaptureError: LocalizedError {
     case loginFailed(String)
     case tokenExchangeFailed(Int)
     case invalidTokenResponse
-    case staleTokenResponse
     case missingIdentity
     case identityMismatch(expected: String, got: String)
     case invalidProfileName
@@ -39,8 +37,6 @@ enum CodexAccountCaptureError: LocalizedError {
             return "OAuth code exchange failed (\(status))."
         case .invalidTokenResponse:
             return "Invalid OAuth response."
-        case .staleTokenResponse:
-            return "Login returned an old auth snapshot. Please sign out of OpenAI in the browser and sign in again."
         case .missingIdentity:
             return "Login did not include email or account_id."
         case let .identityMismatch(expected, got):
@@ -61,14 +57,12 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     private let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
     private let redirectURI = "http://localhost:1455/auth/callback"
     private let scope = "openid profile email offline_access"
-    private let loginTokenIssueTolerance: TimeInterval = 600
 
     private var profileStoreURL: URL {
         AppStorage.profilesURL
     }
 
     func captureNewAccount() async throws -> CapturedCodexAccount {
-        let loginStartedAt = Date()
         let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = codeChallenge(for: verifier)
         let state = try randomURLSafeString(byteCount: 24)
@@ -103,34 +97,29 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         }
 
         let tokenResponse = try await exchangeCode(code, verifier: verifier)
-        try validateFreshLoginToken(tokenResponse, startedAt: loginStartedAt)
         let identity = try identity(from: tokenResponse.idToken)
-        let capture = try CodexAuthFileLock.withLock {
-            let localProfileKey = try plannedLocalProfileKey(identity: identity)
-            let name = try writeCapturedAuth(
-                tokenResponse,
-                identity: identity,
-                sourceProfileKey: localProfileKey
-            )
-            try updateLocalProfiles(
-                tokenResponse,
-                identity: identity,
-                profileKey: localProfileKey,
-                oldProfileKey: nil
-            )
-            return CapturedCodexAccount(
-                profileName: name,
-                email: identity.email,
-                accountID: identity.accountID,
-                sourceProfileKey: localProfileKey
-            )
-        }
+        let localProfileKey = try plannedLocalProfileKey(identity: identity)
+        let profileName = try writeCapturedAuth(
+            tokenResponse,
+            identity: identity,
+            sourceProfileKey: localProfileKey
+        )
+        try updateLocalProfiles(
+            tokenResponse,
+            identity: identity,
+            profileKey: localProfileKey,
+            oldProfileKey: nil
+        )
 
-        return capture
+        return CapturedCodexAccount(
+            profileName: profileName,
+            email: identity.email,
+            accountID: identity.accountID,
+            sourceProfileKey: localProfileKey
+        )
     }
 
     func captureAccount(for target: Account) async throws -> CapturedCodexAccount {
-        let loginStartedAt = Date()
         let verifier = try randomURLSafeString(byteCount: 48)
         let challenge = codeChallenge(for: verifier)
         let state = try randomURLSafeString(byteCount: 24)
@@ -169,31 +158,27 @@ final class CodexAccountCaptureService: @unchecked Sendable {
         }
 
         let tokenResponse = try await exchangeCode(code, verifier: verifier)
-        try validateFreshLoginToken(tokenResponse, startedAt: loginStartedAt)
         let identity = try identity(from: tokenResponse.idToken)
         try validate(identity: identity, matches: target)
-        let capture = try CodexAuthFileLock.withLock {
-            let localProfileKey = try plannedLocalProfileKey(identity: identity, target: target)
-            let name = try writeCapturedAuth(
-                tokenResponse,
-                identity: identity,
-                sourceProfileKey: localProfileKey
-            )
-            try updateLocalProfiles(
-                tokenResponse,
-                identity: identity,
-                profileKey: localProfileKey,
-                oldProfileKey: target.profileKey
-            )
-            return CapturedCodexAccount(
-                profileName: name,
-                email: identity.email,
-                accountID: identity.accountID,
-                sourceProfileKey: localProfileKey
-            )
-        }
+        let localProfileKey = try plannedLocalProfileKey(identity: identity, target: target)
+        let profileName = try writeCapturedAuth(
+            tokenResponse,
+            identity: identity,
+            sourceProfileKey: localProfileKey
+        )
+        try updateLocalProfiles(
+            tokenResponse,
+            identity: identity,
+            profileKey: localProfileKey,
+            oldProfileKey: target.profileKey
+        )
 
-        return capture
+        return CapturedCodexAccount(
+            profileName: profileName,
+            email: identity.email,
+            accountID: identity.accountID,
+            sourceProfileKey: localProfileKey
+        )
     }
 
     private func makeAuthorizationURL(challenge: String, state: String, loginHint: String? = nil) -> URL {
@@ -244,22 +229,6 @@ final class CodexAccountCaptureService: @unchecked Sendable {
             throw CodexAccountCaptureError.invalidTokenResponse
         }
         return decoded
-    }
-
-    private func validateFreshLoginToken(_ tokenResponse: OAuthTokenResponse, startedAt: Date) throws {
-        let payload = try decodeJWTPayload(tokenResponse.idToken)
-        guard let issuedAtSeconds = payload["iat"] as? Double,
-              let expiresAtSeconds = payload["exp"] as? Double else {
-            throw CodexAccountCaptureError.invalidTokenResponse
-        }
-
-        let issuedAt = Date(timeIntervalSince1970: issuedAtSeconds)
-        let expiresAt = Date(timeIntervalSince1970: expiresAtSeconds)
-        let now = Date()
-        guard issuedAt >= startedAt.addingTimeInterval(-loginTokenIssueTolerance),
-              expiresAt > now.addingTimeInterval(60) else {
-            throw CodexAccountCaptureError.staleTokenResponse
-        }
     }
 
     private func identity(from idToken: String) throws -> CapturedIdentity {
@@ -337,14 +306,6 @@ final class CodexAccountCaptureService: @unchecked Sendable {
             "expires_at": Int(tokenResponse.expiresAt),
         ]
         try writeJSONObject(meta, to: profileURL.appendingPathComponent("meta.json"), permissions: 0o600)
-        let removedProfileKeys = try CapturedProfileDedupeService.removeDuplicates(
-            keeping: profileURL,
-            email: identity.email,
-            accountID: identity.accountID,
-            profileStoreURL: profileStoreURL
-        )
-        let keysToRemove = removedProfileKeys.subtracting([sourceProfileKey].compactMap { $0 })
-        try AccountProfileStore.remove(profileKeys: keysToRemove)
 
         return profileName
     }
@@ -604,7 +565,16 @@ final class CodexAccountCaptureService: @unchecked Sendable {
     }
 
     private func writeJSONObject(_ object: Any, to url: URL, permissions: Int) throws {
-        try AppStorage.writeJSON(object, to: url, permissions: permissions)
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        let tempURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: tempURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: tempURL.path)
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+        try fileManager.moveItem(at: tempURL, to: url)
     }
 
     private func randomURLSafeString(byteCount: Int) throws -> String {
@@ -851,7 +821,15 @@ final class LocalAccountRemovalService: @unchecked Sendable {
     }
 
     private func writeJSONObject(_ object: Any, to url: URL, permissions: Int) throws {
-        try AppStorage.writeJSON(object, to: url, permissions: permissions)
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        let tempURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        try data.write(to: tempURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: tempURL.path)
+        if fileManager.fileExists(atPath: url.path) {
+            try fileManager.removeItem(at: url)
+        }
+        try fileManager.moveItem(at: tempURL, to: url)
     }
 }
 
@@ -865,9 +843,6 @@ enum CodexAccountSwitchError: LocalizedError {
     case capturedProfileMissing(String)
     case capturedProfileAmbiguous(String)
     case codexDidNotQuit
-    case codexAuthConsumersStillRunning([String])
-    case codexDatabaseStillLocked([String])
-    case capturedProfileIdentityMismatch(expectedEmail: String, actualEmail: String, expectedAccountID: String, actualAccountID: String)
 
     var errorDescription: String? {
         switch self {
@@ -879,12 +854,6 @@ enum CodexAccountSwitchError: LocalizedError {
             return "More than one captured auth matches \(email)."
         case .codexDidNotQuit:
             return "Codex did not quit; switch canceled."
-        case let .codexAuthConsumersStillRunning(processes):
-            return "Codex auth consumers are still running; switch canceled: \(processes.joined(separator: ", "))"
-        case let .codexDatabaseStillLocked(processes):
-            return "Codex database is still locked; switch canceled: \(processes.joined(separator: ", "))"
-        case let .capturedProfileIdentityMismatch(expectedEmail, actualEmail, expectedAccountID, actualAccountID):
-            return "Codex auth switch canceled: destination profile changed before copy. Expected \(expectedEmail) / \(expectedAccountID), got \(actualEmail) / \(actualAccountID). Live auth was not overwritten."
         }
     }
 }
@@ -918,10 +887,9 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             throw CodexAccountSwitchError.codexAppMissing
         }
 
-        try CodexAuthFileLock.withLock {
+        let profile = try CodexAuthFileLock.withLock {
             authMirrorService.syncActiveAuth()
-            let profile = try capturedProfile(for: account)
-            try validateCapturedProfileIdentity(profile, for: account)
+            return try capturedProfile(for: account)
         }
 
         var didTerminateCodex = false
@@ -932,31 +900,13 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             }
         }
 
-        let codexWasRunning = !runningCodexApps().isEmpty
-        do {
-            try terminateCodex()
-            didTerminateCodex = codexWasRunning
-        } catch CodexAccountSwitchError.codexDidNotQuit {
-            throw CodexAccountSwitchError.codexDidNotQuit
-        } catch {
-            didTerminateCodex = codexWasRunning && runningCodexApps().isEmpty
-            throw error
-        }
-        let profile = try CodexAuthFileLock.withLock {
-            // Close consumers that may have appeared while Codex was shutting down
-            // before replacing the live auth snapshot.
-            terminateAllCodexProcesses()
-            // Codex can rotate the active refresh token while shutting down.
-            authMirrorService.syncActiveAuth()
-            let profile = try capturedProfile(for: account)
-            try validateCapturedProfileIdentity(profile, for: account)
-
-            try backupLiveAuthBeforeSwitch(to: profile)
+        try terminateCodex()
+        didTerminateCodex = true
+        try CodexAuthFileLock.withLock {
             try copyReplacing(source: profile.authURL, destination: defaultAuthURL)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: defaultAuthURL.path)
-            return profile
         }
-        try waitForCodexSQLiteHandlesToClose()
+        restartAppServerDaemonBestEffort()
         try launchCodex()
         didLaunchCodex = true
 
@@ -966,30 +916,10 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         )
     }
 
-    private func validateCapturedProfileIdentity(_ profile: CapturedCodexProfile, for account: Account) throws {
-        let expectedAccountID = account.accountID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let shouldCompareAccountID = !expectedAccountID.isEmpty
-            && !expectedAccountID.isLikelyPersonalAccountID
-        guard let auth = StoredCodexAuth.load(from: profile.authURL),
-              auth.email == account.email.lowercased(),
-              !shouldCompareAccountID || auth.accountID == expectedAccountID else {
-            let auth = StoredCodexAuth.load(from: profile.authURL)
-            throw CodexAccountSwitchError.capturedProfileIdentityMismatch(
-                expectedEmail: account.email.lowercased(),
-                actualEmail: auth?.email ?? "",
-                expectedAccountID: expectedAccountID,
-                actualAccountID: auth?.accountID ?? ""
-            )
-        }
-    }
-
     func currentSourceProfileKey() -> String? {
-        guard let activeAuth = StoredCodexAuth.load(from: defaultAuthURL) else { return nil }
+        guard let activeData = try? Data(contentsOf: defaultAuthURL) else { return nil }
         return capturedProfiles().first { profile in
-            guard let profileAuth = StoredCodexAuth.load(from: profile.authURL) else { return false }
-            return profileAuth.idToken == activeAuth.idToken
-                && profileAuth.accessToken == activeAuth.accessToken
-                && profileAuth.refreshToken == activeAuth.refreshToken
+            (try? Data(contentsOf: profile.authURL)) == activeData
         }?.sourceProfileKey
     }
 
@@ -998,8 +928,9 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
         if let profileKey = account.profileKey {
             let matches = profiles.filter { $0.sourceProfileKey == profileKey }
-            if let profile = try canonicalCapturedProfile(from: matches) {
-                return profile
+            if matches.count == 1 { return matches[0] }
+            if matches.count > 1 {
+                throw CodexAccountSwitchError.capturedProfileAmbiguous(account.email)
             }
         }
 
@@ -1008,28 +939,12 @@ final class CodexAccountSwitchService: @unchecked Sendable {
                 && !account.accountID.isEmpty
                 && profile.accountID == account.accountID
         }
-        if let fallbackProfile = try canonicalCapturedProfile(from: fallbackMatches) {
-            return fallbackProfile
+        if fallbackMatches.count == 1 { return fallbackMatches[0] }
+        if fallbackMatches.count > 1 {
+            throw CodexAccountSwitchError.capturedProfileAmbiguous(account.email)
         }
 
         throw CodexAccountSwitchError.capturedProfileMissing(account.email)
-    }
-
-    private func canonicalCapturedProfile(from matches: [CapturedCodexProfile]) throws -> CapturedCodexProfile? {
-        guard let keep = matches.max(by: { $0.freshnessDate < $1.freshnessDate }) else {
-            return nil
-        }
-        guard matches.count > 1 else { return keep }
-
-        let removedProfileKeys = try CapturedProfileDedupeService.removeDuplicates(
-            keeping: keep.profileURL,
-            email: keep.email,
-            accountID: keep.accountID,
-            profileStoreURL: profileStoreURL
-        )
-        let keysToRemove = removedProfileKeys.subtracting([keep.sourceProfileKey].compactMap { $0 })
-        try AccountProfileStore.remove(profileKeys: keysToRemove)
-        return keep
     }
 
     private func capturedProfiles() -> [CapturedCodexProfile] {
@@ -1057,15 +972,12 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
             let email = (meta["email"] as? String)?.lowercased()
             let accountID = (meta["account_id"] as? String) ?? (tokens["account_id"] as? String)
-            let freshnessDate = CapturedProfileDedupeService.record(for: entry)?.freshnessDate ?? .distantPast
             return CapturedCodexProfile(
                 name: entry.lastPathComponent,
-                profileURL: entry,
                 authURL: authURL,
                 email: email ?? "",
                 accountID: accountID ?? "",
-                sourceProfileKey: meta["source_profile_key"] as? String,
-                freshnessDate: freshnessDate
+                sourceProfileKey: meta["source_profile_key"] as? String
             )
         }
     }
@@ -1078,34 +990,12 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
         for _ in 0..<30 {
             if runningCodexApps().isEmpty {
-                break
+                return
             }
             Thread.sleep(forTimeInterval: 0.5)
         }
 
-        // Layer 3: Sync auth BEFORE force-killing to capture any token
-        // rotation that happened during graceful shutdown.
-        authMirrorService.syncActiveAuth()
-
-        if !runningCodexApps().isEmpty {
-            terminateAllCodexProcesses()
-            for _ in 0..<20 {
-                if runningCodexApps().isEmpty {
-                    break
-                }
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-        }
-
-        if !runningCodexApps().isEmpty {
-            throw CodexAccountSwitchError.codexDidNotQuit
-        }
-
-        stopAppServerDaemonBestEffort()
-        terminateAllCodexProcesses()
-
-        // Final sync after everything is dead to capture any last writes.
-        authMirrorService.syncActiveAuth()
+        throw CodexAccountSwitchError.codexDidNotQuit
     }
 
     private func runningCodexApps() -> [NSRunningApplication] {
@@ -1118,178 +1008,17 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         try run("/usr/bin/open", ["-n", appURL.path])
     }
 
-    private func stopAppServerDaemonBestEffort() {
+    private func restartAppServerDaemonBestEffort() {
         guard fileManager.isExecutableFile(atPath: bundledCodexURL.path) else { return }
-        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "stop"])
-    }
-
-    private func terminateAllCodexProcesses() {
-        let pids = codexProcessPIDs()
-        guard !pids.isEmpty else { return }
-
-        _ = try? run("/bin/kill", ["-TERM"] + pids.map(String.init))
-        if waitForCodexProcessesToExit(timeout: 3) {
+        if (try? run(bundledCodexURL.path, ["app-server", "daemon", "restart"])) != nil {
             return
         }
-
-        // SIGKILL everything that's still alive — never cancel the switch.
-        for _ in 0..<3 {
-            let stubbornPIDs = codexProcessPIDs()
-            guard !stubbornPIDs.isEmpty else { return }
-            _ = try? run("/bin/kill", ["-KILL"] + stubbornPIDs.map(String.init))
-            if waitForCodexProcessesToExit(timeout: 2) {
-                return
-            }
+        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "bootstrap"])
+        if (try? run(bundledCodexURL.path, ["app-server", "daemon", "restart"])) != nil {
+            return
         }
-    }
-
-    private func waitForCodexProcessesToExit(timeout: TimeInterval) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        repeat {
-            if codexProcessPIDs().isEmpty {
-                return true
-            }
-            Thread.sleep(forTimeInterval: 0.1)
-        } while Date() < deadline
-
-        return codexProcessPIDs().isEmpty
-    }
-
-    private func waitForCodexSQLiteHandlesToClose(timeout: TimeInterval = 8) throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        var lastProcesses: [String] = []
-
-        repeat {
-            terminateAllCodexProcesses()
-            lastProcesses = codexSQLiteLockingProcesses()
-            if lastProcesses.isEmpty {
-                Thread.sleep(forTimeInterval: 0.25)
-                if codexSQLiteLockingProcesses().isEmpty {
-                    return
-                }
-            }
-            Thread.sleep(forTimeInterval: 0.2)
-        } while Date() < deadline
-
-        throw CodexAccountSwitchError.codexDatabaseStillLocked(lastProcesses)
-    }
-
-    private func codexSQLiteLockingProcesses() -> [String] {
-        let paths = codexSQLiteStateFiles()
-        guard !paths.isEmpty else { return [] }
-
-        let output = runBestEffort("/usr/sbin/lsof", ["-nP"] + paths.map(\.path))
-        return output
-            .split(separator: "\n")
-            .dropFirst()
-            .compactMap { line -> String? in
-                let text = String(line)
-                guard isCodexSQLiteHandle(text) else { return nil }
-                return text
-            }
-    }
-
-    private func isCodexSQLiteHandle(_ line: String) -> Bool {
-        let lowercased = line.lowercased()
-        guard lowercased.contains(".codex/"),
-              lowercased.contains(".sqlite") else {
-            return false
-        }
-        return lowercased.hasPrefix("codex")
-            || lowercased.hasPrefix("node_repl")
-    }
-
-    private func codexSQLiteStateFiles() -> [URL] {
-        guard let enumerator = fileManager.enumerator(
-            at: homeURL.appendingPathComponent(".codex", isDirectory: true),
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
-        }
-
-        return enumerator.compactMap { item -> URL? in
-            guard let url = item as? URL,
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
-                return nil
-            }
-            let name = url.lastPathComponent
-            guard name.hasSuffix(".sqlite")
-                    || name.hasSuffix(".sqlite-wal")
-                    || name.hasSuffix(".sqlite-shm") else {
-                return nil
-            }
-            return url
-        }
-    }
-
-    private func codexProcessPIDs() -> [Int32] {
-        codexProcesses().map(\.pid)
-    }
-
-    private func codexProcessDescriptions() -> [String] {
-        codexProcesses().map { "\($0.pid) \($0.command)" }
-    }
-
-    private func codexProcesses() -> [(pid: Int32, command: String)] {
-        // IMPORTANT: Do NOT use `eww` flag — it appends environment variables
-        // to the command column, causing false matches on CODEX_CI, PATH, etc.
-        let output = runBestEffort("/bin/ps", ["-axo", "pid=,command="])
-        let currentPID = Darwin.getpid()
-        return output.split(separator: "\n").compactMap { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let space = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }),
-                  let pid = Int32(trimmed[..<space]) else {
-                return nil
-            }
-            guard pid != currentPID else { return nil }
-
-            let command = trimmed[space...].trimmingCharacters(in: .whitespaces)
-            guard isCodexProcess(command) else { return nil }
-            return (pid, command)
-        }
-    }
-
-    private func isCodexProcess(_ command: String) -> Bool {
-        let lowercased = command.lowercased()
-        if lowercased.contains("/applications/codex.app/contents/") {
-            return true
-        }
-        return isCodexAuthConsumer(command)
-    }
-
-    private func isCodexAuthConsumer(_ command: String) -> Bool {
-        let lowercased = command.lowercased()
-        if isCodexExecutableCommand(lowercased) {
-            return true
-        }
-        if lowercased.hasPrefix("node "),
-           lowercased.contains("/codex "),
-           (lowercased.contains(" app-server ") || lowercased.contains(" exec ")) {
-            return true
-        }
-
-        return lowercased.hasPrefix("/")
-            && (
-                lowercased.contains("/node_repl ")
-                    || lowercased.hasSuffix("/node_repl")
-            )
-    }
-
-    private func isCodexExecutableCommand(_ lowercasedCommand: String) -> Bool {
-        if lowercasedCommand == "codex"
-            || lowercasedCommand.hasPrefix("codex ") {
-            return true
-        }
-
-        guard lowercasedCommand.hasPrefix("/") else {
-            return false
-        }
-
-        return lowercasedCommand.hasSuffix("/codex")
-            || lowercasedCommand.contains("/codex ")
-            || lowercasedCommand.hasSuffix("/codex/codex")
-            || lowercasedCommand.contains("/codex/codex ")
+        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "stop"])
+        _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "start"])
     }
 
     private func copyReplacing(source: URL, destination: URL) throws {
@@ -1297,46 +1026,10 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let tempURL = destination.deletingLastPathComponent()
-            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
-        try fileManager.copyItem(at: source, to: tempURL)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempURL.path)
         if fileManager.fileExists(atPath: destination.path) {
-            _ = try fileManager.replaceItemAt(
-                destination,
-                withItemAt: tempURL,
-                backupItemName: nil,
-                options: [.usingNewMetadataOnly]
-            )
-        } else {
-            try fileManager.moveItem(at: tempURL, to: destination)
+            try fileManager.removeItem(at: destination)
         }
-    }
-
-    private func backupLiveAuthBeforeSwitch(to profile: CapturedCodexProfile) throws {
-        guard fileManager.fileExists(atPath: defaultAuthURL.path) else { return }
-
-        let timestamp = DateFormatter.codexSwitchboardBackup.string(from: Date())
-        let backupURL = AppStorage.backupsURL
-            .appendingPathComponent("\(timestamp)-live-auth-before-switch", isDirectory: true)
-        try AppStorage.ensureDirectory(backupURL, permissions: 0o700)
-
-        let authBackupURL = backupURL.appendingPathComponent("auth.json")
-        try fileManager.copyItem(at: defaultAuthURL, to: authBackupURL)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authBackupURL.path)
-
-        try AppStorage.writeJSON(
-            [
-                "target_email": profile.email,
-                "target_account_id": profile.accountID,
-                "target_profile_name": profile.name,
-                "target_source_profile_key": profile.sourceProfileKey ?? "",
-                "created_at": ISO8601DateFormatter.codexSwitchboard.string(from: Date()),
-                "reason": "live-auth-before-switch",
-            ],
-            to: backupURL.appendingPathComponent("metadata.json"),
-            permissions: 0o600
-        )
+        try fileManager.copyItem(at: source, to: destination)
     }
 
     private func readJSONObject(_ url: URL) -> [String: Any]? {
@@ -1345,53 +1038,18 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     }
 
     @discardableResult
-    private func run(_ launchPath: String, _ arguments: [String], timeout: TimeInterval = 10) throws -> String {
+    private func run(_ launchPath: String, _ arguments: [String]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
 
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexSwitchboard-\(UUID().uuidString).log")
-        guard fileManager.createFile(atPath: outputURL.path, contents: nil),
-              let outputHandle = FileHandle(forWritingAtPath: outputURL.path) else {
-            throw NSError(
-                domain: "CodexSwitchboard.CodexAccountSwitchService",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Could not create temporary command output file."]
-            )
-        }
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
-        defer {
-            try? outputHandle.close()
-            try? fileManager.removeItem(at: outputURL)
-        }
-
-        process.standardOutput = outputHandle
-        process.standardError = outputHandle
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
         try process.run()
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-
-        if process.isRunning {
-            process.terminate()
-            Thread.sleep(forTimeInterval: 0.25)
-            if process.isRunning {
-                Darwin.kill(process.processIdentifier, SIGKILL)
-            }
-            process.waitUntilExit()
-            throw NSError(
-                domain: "CodexSwitchboard.CodexAccountSwitchService",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Command timed out: \(launchPath) \(arguments.joined(separator: " "))"]
-            )
-        }
-
         process.waitUntilExit()
-        try outputHandle.synchronize()
-        let data = (try? Data(contentsOf: outputURL)) ?? Data()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
         if process.terminationStatus != 0 {
             throw NSError(
@@ -1410,12 +1068,10 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
 private struct CapturedCodexProfile {
     let name: String
-    let profileURL: URL
     let authURL: URL
     let email: String
     let accountID: String
     let sourceProfileKey: String?
-    let freshnessDate: Date
 }
 
 private struct OAuthTokenResponse: Decodable {
@@ -1684,17 +1340,17 @@ private extension Data {
 }
 
 extension ISO8601DateFormatter {
-    static var codexSwitchboard: ISO8601DateFormatter {
+    static let codexSwitchboard: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
-    }
+    }()
 }
 
-extension DateFormatter {
-    static var codexSwitchboardBackup: DateFormatter {
+private extension DateFormatter {
+    static let codexSwitchboardBackup: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter
-    }
+    }()
 }
