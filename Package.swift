@@ -10,13 +10,17 @@ let package = Package(
         .executable(name: "codex-switchboard", targets: ["CodexSwitchboardCLI"]),
     ],
     targets: [
-        .executableTarget(name: "CodexSwitchboard", path: "Sources/CodexSwitchboard"),
+        .executableTarget(
+            name: "CodexSwitchboard",
+            dependencies: ["CodexSwitchboardCore"],
+            path: "Sources/CodexSwitchboard"
+        ),
         .target(name: "CodexSwitchboardCore", path: "Sources/CodexSwitchboardCore"),
         .executableTarget(
             name: "CodexSwitchboardCLI",
             dependencies: ["CodexSwitchboardCore"],
             path: "Sources/CodexSwitchboardCLI"
         ),
-        .testTarget(name: "CodexSwitchboardTests", dependencies: ["CodexSwitchboard"])
+        .testTarget(name: "CodexSwitchboardTests", dependencies: ["CodexSwitchboard", "CodexSwitchboardCore"])
     ]
 )

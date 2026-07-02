@@ -32,6 +32,49 @@ final class CodexSwitchboardCLITests: XCTestCase {
         XCTAssertTrue(source.contains(#"supportsFileSwitching"#))
         XCTAssertTrue(source.contains(#"unsupported_auth_store_mode"#))
         XCTAssertTrue(source.contains("keyring, auto, and ephemeral modes are detected but not mutated"))
+        XCTAssertTrue(source.contains(#"cli_auth_credentials_store"#))
+    }
+
+    func testCLIDeclaresAutoSwapCommands() throws {
+        let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
+        XCTAssertTrue(source.contains(#"autoswap status --json"#))
+        XCTAssertTrue(source.contains(#"autoswap enable --surface cli|desktop|both --json"#))
+        XCTAssertTrue(source.contains(#"autoswap run-once --surface cli|desktop|both --json"#))
+        XCTAssertTrue(source.contains(#"--dry-run"#))
+        XCTAssertTrue(source.contains(#"max_switches_per_hour"#))
+        XCTAssertFalse(source.contains(#"allowStopConsumers"#))
+        XCTAssertFalse(source.contains(#"let switches: [SwitchPayload]"#))
+        XCTAssertFalse(source.contains(#"uniqueSurfaces"#))
+        XCTAssertTrue(source.contains(#"AutoSwapSwitchPayload"#))
+    }
+
+    func testAppAutoSwapBlocksRunningSurfaces() throws {
+        let source = try String(contentsOf: usageViewModelSourceURL(), encoding: .utf8)
+        XCTAssertTrue(source.contains(#"status.running"#))
+        XCTAssertTrue(source.contains(#"reason: .consumersRunning"#))
+    }
+
+    func testAppAutoSwapRanksOnlyCapturedUsableAccounts() throws {
+        let viewModel = try String(contentsOf: usageViewModelSourceURL(), encoding: .utf8)
+        let adapter = try String(contentsOf: autoSwapAppAdapterSourceURL(), encoding: .utf8)
+        XCTAssertTrue(viewModel.contains(#"autoSwapAccount(needsRelogin: needsRelogin($0))"#))
+        XCTAssertTrue(adapter.contains(#"usableForCodex: isUsableForCodex && !needsRelogin"#))
+        XCTAssertTrue(adapter.contains(#"needsRelogin: needsRelogin"#))
+    }
+
+    func testCLIUsesStableAuthIdentityForActiveProfileMatching() throws {
+        let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
+        XCTAssertTrue(source.contains(#"matchesStableIdentity"#))
+        XCTAssertTrue(source.contains(#"subject:"#))
+        XCTAssertTrue(source.contains(#"accountIDsCompatible"#))
+    }
+
+    func testCLIConsumerChecksAreSurfaceScoped() throws {
+        let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
+        XCTAssertTrue(source.contains(#"consumerProcesses(for surfaces"#))
+        XCTAssertTrue(source.contains(#"consumerTargetKinds"#))
+        XCTAssertTrue(source.contains(#"surface.sharedAuthStore"#))
+        XCTAssertTrue(source.contains(#"isCodexConsumerCommand(command.lowercased(), for: targetKinds)"#))
     }
 
     func testCLIOutputDoesNotEncodeTokenFields() throws {
@@ -50,6 +93,14 @@ final class CodexSwitchboardCLITests: XCTestCase {
 
     private func packageURL() -> URL {
         repoRoot().appendingPathComponent("Package.swift")
+    }
+
+    private func usageViewModelSourceURL() -> URL {
+        repoRoot().appendingPathComponent("Sources/CodexSwitchboard/UsageViewModel.swift")
+    }
+
+    private func autoSwapAppAdapterSourceURL() -> URL {
+        repoRoot().appendingPathComponent("Sources/CodexSwitchboard/AutoSwapAppAdapters.swift")
     }
 
     private func repoRoot() -> URL {

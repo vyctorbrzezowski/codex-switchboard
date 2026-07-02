@@ -181,7 +181,7 @@ final class CodexSurfaceService {
             return "file"
         }
 
-        for key in ["auth_credentials_store_mode", "auth_credentials_store"] {
+        for key in ["cli_auth_credentials_store", "auth_credentials_store_mode", "auth_credentials_store"] {
             if let value = tomlStringValue(named: key, in: config) {
                 return value
             }

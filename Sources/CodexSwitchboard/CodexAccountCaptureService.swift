@@ -843,6 +843,13 @@ enum CodexAccountSwitchError: LocalizedError {
     case capturedProfileMissing(String)
     case capturedProfileAmbiguous(String)
     case codexDidNotQuit
+    case codexAuthConsumersStillRunning([String])
+    case capturedProfileIdentityMismatch(
+        expectedEmail: String,
+        actualEmail: String,
+        expectedAccountID: String,
+        actualAccountID: String
+    )
 
     var errorDescription: String? {
         switch self {
@@ -854,6 +861,10 @@ enum CodexAccountSwitchError: LocalizedError {
             return "More than one captured auth matches \(email)."
         case .codexDidNotQuit:
             return "Codex did not quit; switch canceled."
+        case let .codexAuthConsumersStillRunning(processes):
+            return "Codex auth consumers are still running; switch canceled: \(processes.joined(separator: ", "))"
+        case let .capturedProfileIdentityMismatch(expectedEmail, actualEmail, expectedAccountID, actualAccountID):
+            return "Codex auth switch canceled: destination profile changed before copy. Expected \(expectedEmail) / \(expectedAccountID), got \(actualEmail) / \(actualAccountID). Live auth was not overwritten."
         }
     }
 }
@@ -873,6 +884,14 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
     private var defaultAuthURL: URL {
         homeURL.appendingPathComponent(".codex/auth.json")
+    }
+
+    private var cliAuthURL: URL {
+        if let value = ProcessInfo.processInfo.environment["CODEX_HOME"],
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: value).appendingPathComponent("auth.json")
+        }
+        return defaultAuthURL
     }
 
     private var bundledCodexURL: URL {
@@ -917,6 +936,51 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             profileName: profile.name,
             sourceProfileKey: profile.sourceProfileKey
         )
+    }
+
+    func switchCLIToAccount(_ account: Account) throws -> CodexSwitchResult {
+        let consumers = codexProcessDescriptions(includeDesktopConsumers: cliAuthURL.path == defaultAuthURL.path)
+        if !consumers.isEmpty {
+            throw CodexAccountSwitchError.codexAuthConsumersStillRunning(consumers)
+        }
+
+        try CodexAuthFileLock.withLock {
+            authMirrorService.syncActiveAuth()
+            let profile = try capturedProfile(for: account)
+            try validateCapturedProfileIdentity(profile, for: account)
+        }
+
+        let profile = try CodexAuthFileLock.withLock {
+            authMirrorService.syncActiveAuth()
+            let profile = try capturedProfile(for: account)
+            try validateCapturedProfileIdentity(profile, for: account)
+            try backupCLIAuthBeforeSwitch(at: cliAuthURL, to: profile)
+            try copyReplacing(source: profile.authURL, destination: cliAuthURL)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cliAuthURL.path)
+            return profile
+        }
+
+        return CodexSwitchResult(
+            profileName: profile.name,
+            sourceProfileKey: profile.sourceProfileKey
+        )
+    }
+
+    private func validateCapturedProfileIdentity(_ profile: CapturedCodexProfile, for account: Account) throws {
+        let expectedAccountID = account.accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldCompareAccountID = !expectedAccountID.isEmpty
+            && !expectedAccountID.isLikelyPersonalAccountID
+        guard let auth = StoredCodexAuth.load(from: profile.authURL),
+              auth.email == account.email.lowercased(),
+              !shouldCompareAccountID || auth.accountID == expectedAccountID else {
+            let auth = StoredCodexAuth.load(from: profile.authURL)
+            throw CodexAccountSwitchError.capturedProfileIdentityMismatch(
+                expectedEmail: account.email.lowercased(),
+                actualEmail: auth?.email ?? "",
+                expectedAccountID: expectedAccountID,
+                actualAccountID: auth?.accountID ?? ""
+            )
+        }
     }
 
     func currentSourceProfileKey() -> String? {
@@ -1027,6 +1091,52 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         _ = try? run(bundledCodexURL.path, ["app-server", "daemon", "start"])
     }
 
+    private func codexProcessDescriptions(includeDesktopConsumers: Bool = true) -> [String] {
+        let output = runBestEffort("/bin/ps", ["-axo", "pid=,command="])
+        let currentPID = Darwin.getpid()
+        return output.split(separator: "\n").compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let split = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }),
+                  let pid = Int32(trimmed[..<split]),
+                  pid != currentPID else {
+                return nil
+            }
+            let command = trimmed[split...].trimmingCharacters(in: .whitespaces)
+            guard isCodexAuthConsumer(
+                command.lowercased(),
+                includeDesktopConsumers: includeDesktopConsumers
+            ) else { return nil }
+            return "\(pid) \(command)"
+        }
+    }
+
+    private func isCodexAuthConsumer(
+        _ lowercasedCommand: String,
+        includeDesktopConsumers: Bool
+    ) -> Bool {
+        if includeDesktopConsumers,
+           lowercasedCommand.contains("/applications/codex.app/contents/") {
+            return true
+        }
+        if lowercasedCommand == "codex" || lowercasedCommand.hasPrefix("codex ") {
+            return true
+        }
+        if lowercasedCommand.hasPrefix("/") {
+            return lowercasedCommand.hasSuffix("/codex")
+                || lowercasedCommand.contains("/codex ")
+                || lowercasedCommand.hasSuffix("/codex/codex")
+                || lowercasedCommand.contains("/codex/codex ")
+                || lowercasedCommand.contains("/node_repl ")
+                || lowercasedCommand.hasSuffix("/node_repl")
+        }
+        if lowercasedCommand.hasPrefix("node "),
+           lowercasedCommand.contains("/codex "),
+           (lowercasedCommand.contains(" app-server ") || lowercasedCommand.contains(" exec ")) {
+            return true
+        }
+        return false
+    }
+
     private func copyReplacing(source: URL, destination: URL) throws {
         try fileManager.createDirectory(
             at: destination.deletingLastPathComponent(),
@@ -1036,6 +1146,36 @@ final class CodexAccountSwitchService: @unchecked Sendable {
             try fileManager.removeItem(at: destination)
         }
         try fileManager.copyItem(at: source, to: destination)
+    }
+
+    private func backupCLIAuthBeforeSwitch(at authURL: URL, to profile: CapturedCodexProfile) throws {
+        guard fileManager.fileExists(atPath: authURL.path) else { return }
+
+        let timestamp = DateFormatter.codexSwitchboardBackup.string(from: Date())
+        let backupURL = AppStorage.backupsURL
+            .appendingPathComponent("\(timestamp)-cli-auth-before-auto-swap", isDirectory: true)
+        try AppStorage.ensureDirectory(backupURL, permissions: 0o700)
+
+        let safeAuthName = authURL.path
+            .replacingOccurrences(of: "/", with: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let authBackupURL = backupURL.appendingPathComponent("\(safeAuthName)-auth.json")
+        try fileManager.copyItem(at: authURL, to: authBackupURL)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: authBackupURL.path)
+
+        try AppStorage.writeJSON(
+            [
+                "target_email": profile.email,
+                "target_account_id": profile.accountID,
+                "target_profile_name": profile.name,
+                "target_source_profile_key": profile.sourceProfileKey ?? "",
+                "destination_auth_store": authURL.path,
+                "created_at": ISO8601DateFormatter.codexSwitchboard.string(from: Date()),
+                "reason": "cli-auth-before-auto-swap",
+            ],
+            to: backupURL.appendingPathComponent("\(safeAuthName)-metadata.json"),
+            permissions: 0o600
+        )
     }
 
     private func readJSONObject(_ url: URL) -> [String: Any]? {

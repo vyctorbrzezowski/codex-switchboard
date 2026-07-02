@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CodexSwitchboardCore
 
 /// Central state holder observed by all SwiftUI views.
 @MainActor
@@ -18,6 +19,9 @@ final class UsageViewModel: ObservableObject {
     @Published var activeCodexProfileKey: String?
     @Published var codexSurfaceStatuses: [CodexSurfaceStatus] = []
     @Published var selectedCodexSurface: CodexSurfaceKind = .desktop
+    @Published var autoSwapPolicy: AutoSwapPolicy = AutoSwapPolicy()
+    @Published var autoSwapDecisions: [CodexSurfaceKind: AutoSwapDecision] = [:]
+    @Published var autoSwapSwitchingSurface: CodexSurfaceKind?
     @Published var isCodexInstalled = false
     @Published var lastRefresh: Date?
     @Published var error: String?
@@ -46,6 +50,8 @@ final class UsageViewModel: ObservableObject {
     private let captureService = CodexAccountCaptureService()
     private let switchService = CodexAccountSwitchService()
     private let surfaceService = CodexSurfaceService()
+    private let autoSwapPolicyStore = AutoSwapAppStores.policyStore
+    private let autoSwapAuditStore = AutoSwapAppStores.auditStore
     private let removalService = LocalAccountRemovalService()
     private var refreshTimer: Timer?
     private var reloginTask: Task<Void, Never>?
@@ -75,6 +81,7 @@ final class UsageViewModel: ObservableObject {
             accounts = snap.accounts
             lastRefresh = snap.lastRefresh
         }
+        autoSwapPolicy = autoSwapPolicyStore.load()
         codexLoginStatus = CodexLoginStatusStore.load()
         refreshCodexAvailability()
     }
@@ -228,6 +235,7 @@ final class UsageViewModel: ObservableObject {
             AccountSnapshotStore.save(accounts: accounts, lastRefresh: now)
             codexLoginStatus = CodexLoginStatusStore.load()
             refreshCodexAvailability()
+            evaluateAutoSwap()
             isLoading = false
             startTimer()
             if pendingRefreshAfterCurrent {
@@ -300,6 +308,7 @@ final class UsageViewModel: ObservableObject {
             || reloggingAccountID != nil
             || switchingAccountID != nil
             || removingAccountID != nil
+            || autoSwapSwitchingSurface != nil
     }
 
     func addAccount() {
@@ -447,6 +456,41 @@ final class UsageViewModel: ObservableObject {
 
     func toggleGroupByWorkspace() { groupByWorkspace.toggle() }
 
+    func isAutoSwapEnabled(for surface: CodexSurfaceKind) -> Bool {
+        autoSwapPolicy.isEnabled(for: surface.autoSwapKind)
+    }
+
+    func setAutoSwapEnabled(_ enabled: Bool, for surface: CodexSurfaceKind) {
+        var nextPolicy = autoSwapPolicy
+        nextPolicy.setEnabled(enabled, for: surface.autoSwapKind)
+        do {
+            try autoSwapPolicyStore.save(nextPolicy)
+            autoSwapPolicy = nextPolicy
+            refreshCodexAvailability()
+            refresh()
+        } catch {
+            accountActionError = error.localizedDescription
+        }
+    }
+
+    func autoSwapStatusText(for surface: CodexSurfaceKind) -> String {
+        guard isAutoSwapEnabled(for: surface) else { return "off" }
+        if autoSwapSwitchingSurface == surface { return "switching" }
+        guard let decision = autoSwapDecisions[surface] else { return "armed" }
+        switch decision.decision {
+        case .noAction:
+            return "armed"
+        case .wouldSwitch:
+            return "ready"
+        case .switched:
+            return "switched"
+        case .blocked:
+            return "blocked"
+        case .error:
+            return "error"
+        }
+    }
+
     // MARK: - Timer
 
     private func refreshCodexAvailability() {
@@ -461,10 +505,144 @@ final class UsageViewModel: ObservableObject {
 
     private func startTimer() {
         refreshTimer?.invalidate()
-        let t = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: nextRefreshInterval(), repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         refreshTimer = t
+    }
+
+    private func nextRefreshInterval() -> TimeInterval {
+        let enabledActiveKeys = codexSurfaceStatuses
+            .filter { autoSwapPolicy.isEnabled(for: $0.kind.autoSwapKind) }
+            .compactMap(\.activeProfileKey)
+        let activeAccounts = accounts.filter { account in
+            guard let profileKey = account.profileKey else { return false }
+            return enabledActiveKeys.contains(profileKey)
+        }
+        guard let lowestActiveFree = activeAccounts
+            .map({ min($0.sessionFree, $0.weeklyFree) })
+            .min() else {
+            return 300
+        }
+        if lowestActiveFree <= 10 { return 15 }
+        if lowestActiveFree <= 30 { return 60 }
+        return 300
+    }
+
+    private func evaluateAutoSwap() {
+        guard autoSwapSwitchingSurface == nil,
+              !accounts.isEmpty else {
+            return
+        }
+        let autoAccounts = accounts.compactMap {
+            $0.autoSwapAccount(needsRelogin: needsRelogin($0))
+        }
+        let history = autoSwapAuditStore.load()
+        var nextDecisions: [CodexSurfaceKind: AutoSwapDecision] = [:]
+
+        for status in codexSurfaceStatuses {
+            let decision = AutoSwapDecisionEngine.evaluate(
+                policy: autoSwapPolicy,
+                surface: status.autoSwapSurface,
+                accounts: autoAccounts,
+                history: history
+            )
+            if decision.decision == .wouldSwitch, status.running {
+                nextDecisions[status.kind] = AutoSwapDecision(
+                    generatedAt: Date(),
+                    surface: status.kind.autoSwapKind,
+                    decision: .blocked,
+                    reason: .consumersRunning,
+                    activeProfileKey: decision.activeProfileKey,
+                    candidateProfileKey: decision.candidateProfileKey,
+                    triggerSessionFreePercent: decision.triggerSessionFreePercent,
+                    triggerWeeklyFreePercent: decision.triggerWeeklyFreePercent,
+                    targetMinSessionFreePercent: decision.targetMinSessionFreePercent
+                )
+                continue
+            }
+            nextDecisions[status.kind] = decision
+            guard decision.decision == .wouldSwitch,
+                  let candidateKey = decision.candidateProfileKey,
+                  let candidate = accounts.first(where: { $0.profileKey == candidateKey }) else {
+                continue
+            }
+            performAutoSwap(on: status.kind, to: candidate, planned: decision)
+            break
+        }
+
+        autoSwapDecisions = nextDecisions
+    }
+
+    private func performAutoSwap(
+        on surface: CodexSurfaceKind,
+        to account: Account,
+        planned: AutoSwapDecision
+    ) {
+        guard !hasPendingAccountAction,
+              !needsRelogin(account) else {
+            return
+        }
+        autoSwapSwitchingSurface = surface
+        switchingAccountID = account.id
+        accountActionError = nil
+
+        switchTask = Task.detached { [switchService, autoSwapAuditStore] in
+            do {
+                let result: CodexSwitchResult
+                switch surface {
+                case .desktop:
+                    result = try switchService.switchToAccount(account)
+                case .cli:
+                    result = try switchService.switchCLIToAccount(account)
+                }
+                let switched = AutoSwapDecision(
+                    generatedAt: Date(),
+                    surface: surface.autoSwapKind,
+                    decision: .switched,
+                    reason: .switched,
+                    activeProfileKey: planned.activeProfileKey,
+                    candidateProfileKey: planned.candidateProfileKey,
+                    triggerSessionFreePercent: planned.triggerSessionFreePercent,
+                    triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
+                    targetMinSessionFreePercent: planned.targetMinSessionFreePercent
+                )
+                try? autoSwapAuditStore.record(AutoSwapAuditEvent(
+                    generatedAt: switched.generatedAt,
+                    surface: switched.surface,
+                    decision: switched.decision,
+                    reason: .thresholdReached,
+                    fromProfileKey: switched.activeProfileKey,
+                    toProfileKey: switched.candidateProfileKey
+                ))
+                await MainActor.run {
+                    self.activeCodexProfileKey = result.sourceProfileKey
+                    self.autoSwapDecisions[surface] = switched
+                    self.refreshCodexAvailability()
+                    self.switchingAccountID = nil
+                    self.autoSwapSwitchingSurface = nil
+                    self.switchTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.switchingAccountID = nil
+                    self.autoSwapSwitchingSurface = nil
+                    self.switchTask = nil
+                    self.accountActionError = error.localizedDescription
+                    self.autoSwapDecisions[surface] = AutoSwapDecision(
+                        generatedAt: Date(),
+                        surface: surface.autoSwapKind,
+                        decision: .error,
+                        reason: .thresholdReached,
+                        activeProfileKey: planned.activeProfileKey,
+                        candidateProfileKey: planned.candidateProfileKey,
+                        triggerSessionFreePercent: planned.triggerSessionFreePercent,
+                        triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
+                        targetMinSessionFreePercent: planned.targetMinSessionFreePercent
+                    )
+                }
+            }
+        }
     }
 }

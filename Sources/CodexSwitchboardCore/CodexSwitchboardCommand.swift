@@ -30,6 +30,8 @@ private final class CommandRunner {
     private let surfaceService: CLISurfaceService
     private let accountStore: CLIAccountStore
     private let switchService: CLISwitchService
+    private let autoSwapPolicyStore: AutoSwapPolicyStore
+    private let autoSwapAuditStore: AutoSwapAuditStore
 
     init(arguments: [String]) {
         self.arguments = arguments
@@ -37,6 +39,8 @@ private final class CommandRunner {
         surfaceService = CLISurfaceService(paths: paths)
         accountStore = CLIAccountStore(paths: paths)
         switchService = CLISwitchService(paths: paths, surfaceService: surfaceService)
+        autoSwapPolicyStore = AutoSwapPolicyStore(url: paths.autoSwapPolicyURL)
+        autoSwapAuditStore = AutoSwapAuditStore(url: paths.autoSwapAuditURL)
     }
 
     func run() throws -> CommandResult {
@@ -51,6 +55,8 @@ private final class CommandRunner {
             return try switchProfile(Array(arguments.dropFirst()))
         case "doctor":
             return try doctor(Array(arguments.dropFirst()))
+        case "autoswap":
+            return try autoswap(Array(arguments.dropFirst()))
         case "-h", "--help", "help":
             return CommandResult(payload: .text(Self.helpText), json: false, exitCode: 0)
         default:
@@ -105,9 +111,175 @@ private final class CommandRunner {
         return CommandResult(payload: .doctor(payload), json: options.json, exitCode: 0)
     }
 
+    private func autoswap(_ args: [String]) throws -> CommandResult {
+        guard let subcommand = args.first else {
+            throw CLIError.usage("Missing autoswap command. Use status, enable, disable, or run-once.", jsonPreferred: false)
+        }
+        let rest = Array(args.dropFirst())
+        switch subcommand {
+        case "status":
+            return try autoswapStatus(rest)
+        case "enable":
+            return try autoswapSetEnabled(rest, enabled: true)
+        case "disable":
+            return try autoswapSetEnabled(rest, enabled: false)
+        case "run-once":
+            return try autoswapRunOnce(rest)
+        default:
+            throw CLIError.usage("Unknown autoswap command: \(subcommand)", jsonPreferred: false)
+        }
+    }
+
+    private func autoswapStatus(_ args: [String]) throws -> CommandResult {
+        let options = try AutoSwapStatusOptions.parse(args)
+        let policy = autoSwapPolicyStore.load()
+        let decisions = autoswapDecisions(policy: policy, scope: options.surface)
+        let payload = AutoSwapStatusPayload(
+            generatedAt: Date(),
+            policy: policy,
+            recentEvents: Array(autoSwapAuditStore.load().suffix(10)),
+            decisions: decisions
+        )
+        return CommandResult(payload: .autoSwapStatus(payload), json: options.json, exitCode: 0)
+    }
+
+    private func autoswapSetEnabled(_ args: [String], enabled: Bool) throws -> CommandResult {
+        let options = try AutoSwapToggleOptions.parse(args)
+        var policy = autoSwapPolicyStore.load()
+        for surface in options.surface.surfaceKinds {
+            policy.setEnabled(enabled, for: surface.autoSwapKind)
+        }
+        options.apply(to: &policy)
+        try autoSwapPolicyStore.save(policy)
+        let decisions = autoswapDecisions(policy: policy, scope: options.surface)
+        let payload = AutoSwapStatusPayload(
+            generatedAt: Date(),
+            policy: policy,
+            recentEvents: Array(autoSwapAuditStore.load().suffix(10)),
+            decisions: decisions
+        )
+        return CommandResult(payload: .autoSwapStatus(payload), json: options.json, exitCode: 0)
+    }
+
+    private func autoswapRunOnce(_ args: [String]) throws -> CommandResult {
+        let options = try AutoSwapRunOptions.parse(args)
+        let policy = autoSwapPolicyStore.load()
+        let surfaces = surfaceService.statuses(scope: options.surface)
+        let accounts = accountStore.accounts()
+        let history = autoSwapAuditStore.load()
+        let allConsumers = switchService.consumerProcesses()
+        let stopConsumers = options.stopConsumers
+        var decisions: [AutoSwapDecision] = []
+        var switches: [AutoSwapSwitchPayload] = []
+        var switchedAuthStores = Set<String>()
+
+        for surface in surfaces {
+            let planned = AutoSwapDecisionEngine.evaluate(
+                policy: policy,
+                surface: surface.autoSwapSurface,
+                accounts: accounts.map(\.autoSwapAccount),
+                history: history
+            )
+            guard planned.decision == .wouldSwitch,
+                  let candidate = planned.candidateProfileKey else {
+                decisions.append(planned)
+                continue
+            }
+            guard options.dryRun == false else {
+                decisions.append(planned)
+                continue
+            }
+            let consumers = switchService.consumerProcesses(for: [surface])
+            if !consumers.isEmpty && !stopConsumers {
+                let blocked = AutoSwapDecision(
+                    generatedAt: Date(),
+                    surface: planned.surface,
+                    decision: .blocked,
+                    reason: .consumersRunning,
+                    activeProfileKey: planned.activeProfileKey,
+                    candidateProfileKey: planned.candidateProfileKey,
+                    triggerSessionFreePercent: planned.triggerSessionFreePercent,
+                    triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
+                    targetMinSessionFreePercent: planned.targetMinSessionFreePercent
+                )
+                decisions.append(blocked)
+                continue
+            }
+            let authStoreKey = surface.authStorePath.isEmpty ? surface.kind.rawValue : surface.authStorePath
+            if switchedAuthStores.contains(authStoreKey) {
+                decisions.append(AutoSwapDecision(
+                    generatedAt: Date(),
+                    surface: planned.surface,
+                    decision: .switched,
+                    reason: .switched,
+                    activeProfileKey: planned.activeProfileKey,
+                    candidateProfileKey: planned.candidateProfileKey,
+                    triggerSessionFreePercent: planned.triggerSessionFreePercent,
+                    triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
+                    targetMinSessionFreePercent: planned.targetMinSessionFreePercent
+                ))
+                continue
+            }
+            let outcome = try switchService.switchProfile(
+                profileKey: candidate,
+                scope: SurfaceScope(surface.kind),
+                stopConsumers: stopConsumers
+            )
+            switchedAuthStores.insert(authStoreKey)
+            switches.append(AutoSwapSwitchPayload(outcome: outcome))
+            let switched = AutoSwapDecision(
+                generatedAt: Date(),
+                surface: planned.surface,
+                decision: .switched,
+                reason: .switched,
+                activeProfileKey: planned.activeProfileKey,
+                candidateProfileKey: planned.candidateProfileKey,
+                triggerSessionFreePercent: planned.triggerSessionFreePercent,
+                triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
+                targetMinSessionFreePercent: planned.targetMinSessionFreePercent
+            )
+            try autoSwapAuditStore.record(AutoSwapAuditEvent(
+                generatedAt: switched.generatedAt,
+                surface: switched.surface,
+                decision: switched.decision,
+                reason: .thresholdReached,
+                fromProfileKey: switched.activeProfileKey,
+                toProfileKey: switched.candidateProfileKey
+            ))
+            decisions.append(switched)
+        }
+
+        let payload = AutoSwapRunPayload(
+            generatedAt: Date(),
+            policy: policy,
+            dryRun: options.dryRun,
+            consumerCount: allConsumers.count,
+            decisions: decisions,
+            switches: switches
+        )
+        return CommandResult(payload: .autoSwapRun(payload), json: options.json, exitCode: 0)
+    }
+
+    private func autoswapDecisions(policy: AutoSwapPolicy, scope: SurfaceScope) -> [AutoSwapDecision] {
+        let accounts = accountStore.accounts().map(\.autoSwapAccount)
+        let history = autoSwapAuditStore.load()
+        return surfaceService.statuses(scope: scope).map { surface in
+            AutoSwapDecisionEngine.evaluate(
+                policy: policy,
+                surface: surface.autoSwapSurface,
+                accounts: accounts,
+                history: history
+            )
+        }
+    }
+
     private static let helpText = """
     codex-switchboard status --json [--surface all|desktop|cli] [--paid-only] [--usable-only]
     codex-switchboard switch --profile-key <key> --surface desktop|cli|both --json [--stop-consumers]
+    codex-switchboard autoswap status --json [--surface all|desktop|cli]
+    codex-switchboard autoswap enable --surface cli|desktop|both --json [--trigger-session-free <percent>] [--target-min-session-free <percent>]
+    codex-switchboard autoswap disable --surface cli|desktop|both --json
+    codex-switchboard autoswap run-once --surface cli|desktop|both --json [--dry-run] [--stop-consumers]
     codex-switchboard doctor --json
     """
 }
@@ -126,9 +298,18 @@ private enum SurfaceScope: String, Codable {
         case .cli: return [.cli]
         }
     }
+
+    init(_ surface: SurfaceKind) {
+        switch surface {
+        case .desktop:
+            self = .desktop
+        case .cli:
+            self = .cli
+        }
+    }
 }
 
-private enum SurfaceKind: String, Codable {
+private enum SurfaceKind: String, Codable, Hashable {
     case desktop
     case cli
 
@@ -136,6 +317,13 @@ private enum SurfaceKind: String, Codable {
         switch self {
         case .desktop: return "Codex Desktop"
         case .cli: return "Codex CLI"
+        }
+    }
+
+    var autoSwapKind: AutoSwapSurfaceKind {
+        switch self {
+        case .desktop: return .desktop
+        case .cli: return .cli
         }
     }
 }
@@ -190,6 +378,85 @@ private struct DoctorOptions {
     }
 }
 
+private struct AutoSwapStatusOptions {
+    let json: Bool
+    let surface: SurfaceScope
+
+    static func parse(_ args: [String]) throws -> AutoSwapStatusOptions {
+        var parser = ArgumentParser(args)
+        let json = parser.takeFlag("--json")
+        let surface = try parser.takeSurface(default: .all, allowed: [.all, .desktop, .cli])
+        try parser.finish()
+        return AutoSwapStatusOptions(json: json, surface: surface)
+    }
+}
+
+private struct AutoSwapToggleOptions {
+    let json: Bool
+    let surface: SurfaceScope
+    let triggerSessionFreePercent: Double?
+    let triggerWeeklyFreePercent: Double?
+    let targetMinSessionFreePercent: Double?
+    let cooldownSeconds: Double?
+    let maxSwitchesPerHour: Int?
+
+    static func parse(_ args: [String]) throws -> AutoSwapToggleOptions {
+        var parser = ArgumentParser(args)
+        let json = parser.takeFlag("--json")
+        let triggerSessionFreePercent = try parser.takeOptionalDouble("--trigger-session-free")
+        let triggerWeeklyFreePercent = try parser.takeOptionalDouble("--trigger-weekly-free")
+        let targetMinSessionFreePercent = try parser.takeOptionalDouble("--target-min-session-free")
+        let cooldownSeconds = try parser.takeOptionalDouble("--cooldown-seconds")
+        let maxSwitchesPerHour = try parser.takeOptionalInt("--max-switches-per-hour")
+        let surface = try parser.takeSurface(default: nil, allowed: [.desktop, .cli, .both])
+        try parser.finish()
+        return AutoSwapToggleOptions(
+            json: json,
+            surface: surface,
+            triggerSessionFreePercent: triggerSessionFreePercent,
+            triggerWeeklyFreePercent: triggerWeeklyFreePercent,
+            targetMinSessionFreePercent: targetMinSessionFreePercent,
+            cooldownSeconds: cooldownSeconds,
+            maxSwitchesPerHour: maxSwitchesPerHour
+        )
+    }
+
+    func apply(to policy: inout AutoSwapPolicy) {
+        if let triggerSessionFreePercent {
+            policy.triggerSessionFreePercent = max(0, min(100, triggerSessionFreePercent))
+        }
+        if let triggerWeeklyFreePercent {
+            policy.triggerWeeklyFreePercent = max(0, min(100, triggerWeeklyFreePercent))
+        }
+        if let targetMinSessionFreePercent {
+            policy.targetMinSessionFreePercent = max(0, min(100, targetMinSessionFreePercent))
+        }
+        if let cooldownSeconds {
+            policy.cooldownSeconds = max(0, cooldownSeconds)
+        }
+        if let maxSwitchesPerHour {
+            policy.maxSwitchesPerHour = max(1, maxSwitchesPerHour)
+        }
+    }
+}
+
+private struct AutoSwapRunOptions {
+    let json: Bool
+    let surface: SurfaceScope
+    let dryRun: Bool
+    let stopConsumers: Bool
+
+    static func parse(_ args: [String]) throws -> AutoSwapRunOptions {
+        var parser = ArgumentParser(args)
+        let json = parser.takeFlag("--json")
+        let dryRun = parser.takeFlag("--dry-run")
+        let stopConsumers = parser.takeFlag("--stop-consumers")
+        let surface = try parser.takeSurface(default: nil, allowed: [.desktop, .cli, .both])
+        try parser.finish()
+        return AutoSwapRunOptions(json: json, surface: surface, dryRun: dryRun, stopConsumers: stopConsumers)
+    }
+}
+
 private struct ArgumentParser {
     private var args: [String]
 
@@ -215,6 +482,22 @@ private struct ArgumentParser {
         args.remove(at: index)
         guard index < args.count else { return "" }
         return args.remove(at: index)
+    }
+
+    mutating func takeOptionalDouble(_ flag: String) throws -> Double? {
+        guard let raw = takeOptionalValue(flag) else { return nil }
+        guard let value = Double(raw) else {
+            throw CLIError.usage("Invalid \(flag) \(raw). Expected a number.", jsonPreferred: false)
+        }
+        return value
+    }
+
+    mutating func takeOptionalInt(_ flag: String) throws -> Int? {
+        guard let raw = takeOptionalValue(flag) else { return nil }
+        guard let value = Int(raw) else {
+            throw CLIError.usage("Invalid \(flag) \(raw). Expected an integer.", jsonPreferred: false)
+        }
+        return value
     }
 
     mutating func takeSurface(default defaultSurface: SurfaceScope?, allowed: Set<SurfaceScope>) throws -> SurfaceScope {
@@ -244,15 +527,24 @@ private struct SwitchboardPaths {
     let backupsURL: URL
     let accountsURL: URL
     let snapshotURL: URL
+    let autoSwapPolicyURL: URL
+    let autoSwapAuditURL: URL
 
     init(homeURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.homeURL = homeURL
-        appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CodexSwitchboard", isDirectory: true)
+        if let override = ProcessInfo.processInfo.environment["CODEX_SWITCHBOARD_APP_SUPPORT"],
+           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appSupportURL = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("CodexSwitchboard", isDirectory: true)
+        }
         profilesURL = appSupportURL.appendingPathComponent("profiles", isDirectory: true)
         backupsURL = appSupportURL.appendingPathComponent("backups", isDirectory: true)
         accountsURL = appSupportURL.appendingPathComponent("accounts.json")
         snapshotURL = appSupportURL.appendingPathComponent("accounts-snapshot.json")
+        autoSwapPolicyURL = appSupportURL.appendingPathComponent("auto-swap-policy.json")
+        autoSwapAuditURL = appSupportURL.appendingPathComponent("auto-swap-events.json")
     }
 
     func codexHome(for kind: SurfaceKind) -> URL {
@@ -391,7 +683,7 @@ private final class CLISurfaceService {
         ) else {
             return "file"
         }
-        for key in ["auth_credentials_store_mode", "auth_credentials_store"] {
+        for key in ["cli_auth_credentials_store", "auth_credentials_store_mode", "auth_credentials_store"] {
             if let value = tomlStringValue(named: key, in: config) {
                 return value
             }
@@ -507,12 +799,12 @@ private final class CLISwitchService {
             )
         }
 
-        let consumers = consumerProcesses()
+        let consumers = consumerProcesses(for: surfaces)
         if !consumers.isEmpty {
             guard stopConsumers else {
                 throw CLIError.consumersRunning(consumers.map(\.description), jsonPreferred: true)
             }
-            terminate(consumers)
+            terminate(consumers, for: surfaces)
         }
 
         var written: [SwitchSurfacePayload] = []
@@ -601,6 +893,25 @@ private final class CLISwitchService {
         }
     }
 
+    func consumerProcesses(for surfaces: [SurfaceStatusPayload]) -> [ProcessInfoPayload] {
+        let targetKinds = consumerTargetKinds(for: surfaces)
+        let currentPID = Darwin.getpid()
+        return processLinesWithPID().compactMap { pid, command in
+            guard pid != currentPID else { return nil }
+            guard isCodexConsumerCommand(command.lowercased(), for: targetKinds) else { return nil }
+            return ProcessInfoPayload(pid: pid, command: command)
+        }
+    }
+
+    private func consumerTargetKinds(for surfaces: [SurfaceStatusPayload]) -> Set<SurfaceKind> {
+        surfaces.reduce(into: Set<SurfaceKind>()) { result, surface in
+            result.insert(surface.kind)
+            if surface.sharedAuthStore, let sharedWith = surface.sharedWith {
+                result.insert(sharedWith)
+            }
+        }
+    }
+
     private func validateCapturedProfile(_ profile: CapturedProfile) throws {
         guard let auth = StoredAuth.load(from: profile.authURL),
               auth.hasCompleteTokens,
@@ -610,27 +921,27 @@ private final class CLISwitchService {
         }
     }
 
-    private func terminate(_ consumers: [ProcessInfoPayload]) {
+    private func terminate(_ consumers: [ProcessInfoPayload], for surfaces: [SurfaceStatusPayload]) {
         let pids = consumers.map(\.pid)
         _ = try? run("/bin/kill", ["-TERM"] + pids.map(String.init), timeout: 3)
-        if waitForConsumersToExit(timeout: 3) {
+        if waitForConsumersToExit(for: surfaces, timeout: 3) {
             return
         }
-        let remaining = consumerProcesses().map(\.pid)
+        let remaining = consumerProcesses(for: surfaces).map(\.pid)
         guard !remaining.isEmpty else { return }
         _ = try? run("/bin/kill", ["-KILL"] + remaining.map(String.init), timeout: 3)
-        _ = waitForConsumersToExit(timeout: 2)
+        _ = waitForConsumersToExit(for: surfaces, timeout: 2)
     }
 
-    private func waitForConsumersToExit(timeout: TimeInterval) -> Bool {
+    private func waitForConsumersToExit(for surfaces: [SurfaceStatusPayload], timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if consumerProcesses().isEmpty {
+            if consumerProcesses(for: surfaces).isEmpty {
                 return true
             }
             Thread.sleep(forTimeInterval: 0.1)
         } while Date() < deadline
-        return consumerProcesses().isEmpty
+        return consumerProcesses(for: surfaces).isEmpty
     }
 
     private func backupLiveAuth(at authURL: URL, target: CapturedProfile) throws {
@@ -714,12 +1025,22 @@ private final class CapturedProfileStore {
     }
 
     func profileMatching(auth: StoredAuth) -> CapturedProfile? {
-        profiles().first { profile in
-            guard let profileAuth = StoredAuth.load(from: profile.authURL) else { return false }
-            return profileAuth.idToken == auth.idToken
-                && profileAuth.accessToken == auth.accessToken
-                && profileAuth.refreshToken == auth.refreshToken
+        let loadedProfiles = profiles().compactMap { profile -> (profile: CapturedProfile, auth: StoredAuth)? in
+            guard let profileAuth = StoredAuth.load(from: profile.authURL) else { return nil }
+            return (profile, profileAuth)
         }
+        let exactMatches = loadedProfiles.filter { candidate in
+            candidate.auth.idToken == auth.idToken
+                && candidate.auth.accessToken == auth.accessToken
+                && candidate.auth.refreshToken == auth.refreshToken
+        }
+        if let match = newestProfile(from: exactMatches) {
+            return match
+        }
+
+        return newestProfile(from: loadedProfiles.filter { candidate in
+            candidate.auth.matchesStableIdentity(auth, capturedProfile: candidate.profile)
+        })
     }
 
     func hasProfile(sourceProfileKey: String) -> Bool {
@@ -756,6 +1077,10 @@ private final class CapturedProfileStore {
             )
         }
     }
+
+    private func newestProfile(from matches: [(profile: CapturedProfile, auth: StoredAuth)]) -> CapturedProfile? {
+        matches.map(\.profile).max { $0.freshnessDate < $1.freshnessDate }
+    }
 }
 
 private struct CapturedProfile {
@@ -774,6 +1099,7 @@ private struct StoredAuth {
     let refreshToken: String
     let accountID: String
     let email: String
+    let subject: String
 
     var hasCompleteTokens: Bool {
         !idToken.isEmpty && !accessToken.isEmpty && !refreshToken.isEmpty
@@ -796,8 +1122,35 @@ private struct StoredAuth {
             refreshToken: refreshToken,
             accountID: ((tokens["account_id"] as? String) ?? (authPayload?["chatgpt_account_id"] as? String) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-            email: ((idPayload?["email"] as? String) ?? "").lowercased()
+            email: ((idPayload?["email"] as? String) ?? "").lowercased(),
+            subject: ((idPayload?["sub"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         )
+    }
+
+    func matchesStableIdentity(_ other: StoredAuth, capturedProfile: CapturedProfile) -> Bool {
+        if !subject.isEmpty, !other.subject.isEmpty, subject == other.subject {
+            return accountIDsCompatible(accountID, other.accountID)
+        }
+        if !accountID.isEmpty, !other.accountID.isEmpty, accountID == other.accountID {
+            return true
+        }
+        if !capturedProfile.accountID.isEmpty,
+           !other.accountID.isEmpty,
+           capturedProfile.accountID == other.accountID {
+            return true
+        }
+        if !email.isEmpty, !other.email.isEmpty, email == other.email {
+            return accountIDsCompatible(accountID, other.accountID)
+        }
+        if !capturedProfile.email.isEmpty, !other.email.isEmpty, capturedProfile.email == other.email {
+            return accountIDsCompatible(capturedProfile.accountID, other.accountID)
+        }
+        return false
+    }
+
+    private func accountIDsCompatible(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.isEmpty || rhs.isEmpty || lhs == rhs
     }
 
     private static func decodePayload(_ token: String) -> [String: Any]? {
@@ -981,6 +1334,32 @@ private struct SurfaceStatusPayload: Codable {
     }
 }
 
+private extension SurfaceStatusPayload {
+    var autoSwapSurface: AutoSwapSurface {
+        AutoSwapSurface(
+            kind: kind.autoSwapKind,
+            detected: detected,
+            supportsFileSwitching: supportsFileSwitching,
+            activeProfileKey: activeProfileKey,
+            authStoreMode: authStoreMode
+        )
+    }
+}
+
+private extension AccountPayload {
+    var autoSwapAccount: AutoSwapAccount {
+        AutoSwapAccount(
+            profileKey: profileKey,
+            sessionFreePercent: sessionFreePercent,
+            weeklyFreePercent: weeklyFreePercent,
+            usableForCodex: usableForCodex,
+            needsRelogin: needsRelogin,
+            isFreePlan: isFreePlan,
+            score: score
+        )
+    }
+}
+
 private struct StatusPayload: Codable {
     let generatedAt: Date
     let surfaces: [SurfaceStatusPayload]
@@ -1043,6 +1422,74 @@ private struct DoctorPayload: Codable {
     }
 }
 
+private struct AutoSwapStatusPayload: Codable {
+    let generatedAt: Date
+    let policy: AutoSwapPolicy
+    let recentEvents: [AutoSwapAuditEvent]
+    let decisions: [AutoSwapDecision]
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case policy
+        case recentEvents = "recent_events"
+        case decisions
+    }
+}
+
+private struct AutoSwapRunPayload: Codable {
+    let generatedAt: Date
+    let policy: AutoSwapPolicy
+    let dryRun: Bool
+    let consumerCount: Int
+    let decisions: [AutoSwapDecision]
+    let switches: [AutoSwapSwitchPayload]
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case policy
+        case dryRun = "dry_run"
+        case consumerCount = "consumer_count"
+        case decisions
+        case switches
+    }
+}
+
+private struct AutoSwapSwitchPayload: Codable {
+    let generatedAt: Date
+    let profileKey: String
+    let surfaces: [AutoSwapSwitchSurfacePayload]
+
+    enum CodingKeys: String, CodingKey {
+        case generatedAt = "generated_at"
+        case profileKey = "profile_key"
+        case surfaces
+    }
+
+    init(outcome: SwitchPayload) {
+        generatedAt = outcome.generatedAt
+        profileKey = outcome.profileKey
+        surfaces = outcome.surfaces.map(AutoSwapSwitchSurfacePayload.init)
+    }
+}
+
+private struct AutoSwapSwitchSurfacePayload: Codable {
+    let kind: SurfaceKind
+    let authStoreMode: String
+    let sharedAuthStore: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case authStoreMode = "auth_store_mode"
+        case sharedAuthStore = "shared_auth_store"
+    }
+
+    init(surface: SwitchSurfacePayload) {
+        kind = surface.kind
+        authStoreMode = surface.authStoreMode
+        sharedAuthStore = surface.sharedAuthStore
+    }
+}
+
 private struct ProcessInfoPayload: Codable {
     let pid: Int32
     let command: String
@@ -1057,6 +1504,8 @@ private enum EncodablePayload {
     case status(StatusPayload)
     case switchOutcome(SwitchPayload)
     case doctor(DoctorPayload)
+    case autoSwapStatus(AutoSwapStatusPayload)
+    case autoSwapRun(AutoSwapRunPayload)
     case error(ErrorPayload)
 }
 
@@ -1153,6 +1602,10 @@ private enum Output {
                 printJSON(value)
             case let .doctor(value):
                 printJSON(value)
+            case let .autoSwapStatus(value):
+                printJSON(value)
+            case let .autoSwapRun(value):
+                printJSON(value)
             case let .error(value):
                 printJSON(value)
             case let .text(value):
@@ -1168,6 +1621,11 @@ private enum Output {
                 print("switched \(value.profileKey) on \(value.surfaces.map { $0.kind.rawValue }.joined(separator: ","))")
             case let .doctor(value):
                 print("consumers_running: \(value.consumersRunning), unsupported_surfaces: \(value.unsupportedSurfaces.map(\.rawValue).joined(separator: ","))")
+            case let .autoSwapStatus(value):
+                print("autoswap_enabled: \(value.policy.enabledSurfaces.map(\.rawValue).sorted().joined(separator: ",")), decisions: \(value.decisions.count)")
+            case let .autoSwapRun(value):
+                let summary = value.decisions.map { "\($0.surface.rawValue):\($0.decision.rawValue)" }.joined(separator: ",")
+                print("autoswap_run: \(summary), consumers: \(value.consumerCount)")
             case let .error(value):
                 fputs("\(value.message)\n", stderr)
             }
@@ -1227,8 +1685,16 @@ private func processLinesWithPID() -> [(pid: Int32, command: String)] {
 }
 
 private func isCodexConsumerCommand(_ lowercasedCommand: String) -> Bool {
-    if isCodexDesktopProcessCommand(lowercasedCommand) {
+    isCodexConsumerCommand(lowercasedCommand, for: [.desktop, .cli])
+}
+
+private func isCodexConsumerCommand(_ lowercasedCommand: String, for targetKinds: Set<SurfaceKind>) -> Bool {
+    if targetKinds.contains(.desktop),
+       isCodexDesktopProcessCommand(lowercasedCommand) {
         return true
+    }
+    guard targetKinds.contains(.cli) else {
+        return false
     }
     if isCodexExecutableCommand(lowercasedCommand) {
         return true

@@ -7,7 +7,7 @@ description: Use when an agent orchestrator needs to inspect Codex Desktop or Co
 
 ## Overview
 
-Use the local `codex-switchboard` CLI to inspect Codex Desktop/CLI auth surfaces and switch profiles only when the caller explicitly asks for a switch. Treat all auth files as sensitive; never print tokens or raw `auth.json` contents.
+Use the local `codex-switchboard` CLI to inspect Codex Desktop/CLI auth surfaces and switch profiles only when the caller explicitly asks for a switch. Use `autoswap run-once` when the caller has enabled policy-driven failover. Treat all auth files as sensitive; never print tokens or raw `auth.json` contents.
 
 ## Required Rules
 
@@ -15,6 +15,7 @@ Use the local `codex-switchboard` CLI to inspect Codex Desktop/CLI auth surfaces
 - Prefer paid usable accounts: `is_free_plan == false`, `usable_for_codex == true`, and `needs_relogin == false`.
 - Do not switch to free-plan accounts unless the user explicitly requests that exact profile.
 - Do not use `--stop-consumers` unless the user explicitly authorized stopping running Codex Desktop/CLI consumers.
+- Prefer `autoswap run-once --dry-run` before a policy-driven switch so the decision and candidate are visible without mutating auth.
 - After any switch, verify the selected surface reports the requested `active_profile_key`.
 - Report counts, chosen rationale, and safe commands. Avoid pasting full account JSON into chat or logs.
 
@@ -58,6 +59,38 @@ codex-switchboard status --json --surface cli \
 ```
 
 If `matched` is not `true`, treat the switch as failed and report the blocker.
+
+## Auto-swap Workflow
+
+Use auto-swap when the user has asked for low-quota failover rather than one specific profile.
+
+1. Inspect the current policy and decisions:
+
+```bash
+codex-switchboard autoswap status --json \
+  | jq '{policy, decisions: [.decisions[] | {surface, decision, reason, active_profile_key, candidate_profile_key}]}'
+```
+
+2. Enable policy only when explicitly requested:
+
+```bash
+codex-switchboard autoswap enable --surface cli --json
+```
+
+3. Dry-run the policy decision:
+
+```bash
+codex-switchboard autoswap run-once --surface cli --json --dry-run \
+  | jq '{consumer_count, decisions: [.decisions[] | {surface, decision, reason, active_profile_key, candidate_profile_key}]}'
+```
+
+4. Execute only through the policy engine:
+
+```bash
+codex-switchboard autoswap run-once --surface cli --json
+```
+
+Add `--stop-consumers` only when the caller explicitly authorized stopping running Codex consumers. If the result is `blocked`, report the `reason` and do not manually edit auth files.
 
 ## Pressure Scenario
 
