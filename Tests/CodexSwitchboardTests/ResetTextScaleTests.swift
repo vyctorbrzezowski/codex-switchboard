@@ -66,4 +66,17 @@ final class ResetTextScaleTests: XCTestCase {
 
         XCTAssertLessThanOrEqual(layout.emailWidth + fixedWidth, contentWidth)
     }
+
+    func testFocusedLayoutReservesNormalQuotaWidthAtSmallScale() {
+        let layout = CompactRowLayout.metrics(
+            totalWidth: 580,
+            showsFullInformation: false,
+            showsActionControl: true,
+            resetTextScale: 0.8
+        )
+        let contentWidth = 580 - CompactRowLayout.horizontalPadding * 2
+        let fixedWidth = 16 + layout.actionWidth + layout.metricWidth * 2 + layout.spacing * 4
+
+        XCTAssertLessThanOrEqual(layout.emailWidth + fixedWidth, contentWidth)
+    }
 }

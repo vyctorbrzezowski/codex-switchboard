@@ -293,13 +293,20 @@ enum CompactRowLayout {
         let spacing: CGFloat = showsFullInformation ? 4 : 8
         let contentWidth = max(0, totalWidth - horizontalPadding * 2)
         let readableScale = min(max(resetTextScale, 0.8), 2)
+        func fittingEmailWidth(after fixedWidth: CGFloat) -> CGFloat {
+            let availableWidth = max(0, contentWidth - fixedWidth)
+            return availableWidth < emailMinWidth ? availableWidth : max(emailMinWidth, availableWidth)
+        }
+
         guard showsFullInformation else {
             let metricWidth: CGFloat = 66
-            let statusWidth = ceil((metricWidth * 2 + spacing) * readableScale)
-            let fixedWidth = 16 + actionWidth + statusWidth + spacing * 3
+            let freeResetWidth = ceil((metricWidth * 2 + spacing) * readableScale)
+            let quotaFixedWidth = actionWidth + metricWidth * 2 + spacing * 4 + 16
+            let freeResetFixedWidth = actionWidth + freeResetWidth + spacing * 3 + 16
+            let fixedWidth = max(quotaFixedWidth, freeResetFixedWidth)
             return Metrics(
                 spacing: spacing,
-                emailWidth: max(0, contentWidth - fixedWidth),
+                emailWidth: fittingEmailWidth(after: fixedWidth),
                 workspaceWidth: 0,
                 metricWidth: metricWidth,
                 sessionResetWidth: 0,
@@ -315,7 +322,7 @@ enum CompactRowLayout {
         let weeklyResetWidth: CGFloat = ceil(64 * readableScale)
         let planCycleWidth: CGFloat = ceil(32 * readableScale)
         let swapControlWidth: CGFloat = actionWidth
-        let fixedWidth = 16
+        let quotaFixedWidth = 16
             + workspaceWidth
             + swapControlWidth
             + metricWidth * 2
@@ -323,10 +330,17 @@ enum CompactRowLayout {
             + weeklyResetWidth
             + planCycleWidth
             + spacing * 6
+        let freeResetWidth = metricWidth * 2 + sessionResetWidth + weeklyResetWidth + planCycleWidth + spacing * 2 + 4
+        let freeResetFixedWidth = 16
+            + workspaceWidth
+            + swapControlWidth
+            + freeResetWidth
+            + spacing * 4
+        let fixedWidth = max(quotaFixedWidth, freeResetFixedWidth)
 
         return Metrics(
             spacing: spacing,
-            emailWidth: max(0, contentWidth - fixedWidth),
+            emailWidth: fittingEmailWidth(after: fixedWidth),
             workspaceWidth: workspaceWidth,
             metricWidth: metricWidth,
             sessionResetWidth: sessionResetWidth,
