@@ -145,7 +145,7 @@ struct HeaderView: View {
                 Picker(
                     "Reset text size",
                     selection: Binding(
-                        get: { vm.resetTextScalePercent },
+                        get: { ResetTextScale.nearestPresetPercent(to: vm.resetTextScalePercent) },
                         set: { vm.setResetTextScale(percent: $0) }
                     )
                 ) {
