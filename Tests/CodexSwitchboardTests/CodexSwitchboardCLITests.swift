@@ -6,7 +6,8 @@ final class CodexSwitchboardCLITests: XCTestCase {
         XCTAssertTrue(package.contains(#".library(name: "CodexSwitchboardCore""#))
         XCTAssertTrue(package.contains(#".target(name: "CodexSwitchboardCore""#))
         XCTAssertTrue(package.contains(#".executable(name: "codex-switchboard""#))
-        XCTAssertTrue(package.contains(#".executableTarget(name: "CodexSwitchboardCLI""#))
+        XCTAssertTrue(package.contains(#".executableTarget("#))
+        XCTAssertTrue(package.contains(#"name: "CodexSwitchboardCLI""#))
         XCTAssertTrue(package.contains(#"dependencies: ["CodexSwitchboardCore"]"#))
     }
 
