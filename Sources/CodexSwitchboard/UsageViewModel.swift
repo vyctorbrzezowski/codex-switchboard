@@ -30,6 +30,11 @@ final class UsageViewModel: ObservableObject {
     @Published var listDensity: ListDensity = .compact {
         didSet { UserDefaults.standard.set(listDensity.rawValue, forKey: "listDensity") }
     }
+    @Published var resetTextScalePercent = ResetTextScale.defaultPercent {
+        didSet {
+            UserDefaults.standard.set(resetTextScalePercent, forKey: "resetTextScalePercent")
+        }
+    }
     @Published var waitingForResetCollapsed = false
     @Published var freeWaitingCollapsed = true
 
@@ -58,6 +63,11 @@ final class UsageViewModel: ObservableObject {
             informationMode = .focused
         }
         listDensity = .compact
+        if UserDefaults.standard.object(forKey: "resetTextScalePercent") != nil {
+            resetTextScalePercent = ResetTextScale.clampedPercent(
+                UserDefaults.standard.integer(forKey: "resetTextScalePercent")
+            )
+        }
         if AccountProfileStore.hasProfiles, let snap = AccountSnapshotStore.load() {
             accounts = snap.accounts
             lastRefresh = snap.lastRefresh
@@ -380,6 +390,18 @@ final class UsageViewModel: ObservableObject {
 
     func toggleListDensity() {
         listDensity = .compact
+    }
+
+    var resetTextScale: CGFloat {
+        ResetTextScale.scale(for: resetTextScalePercent)
+    }
+
+    func setResetTextScale(percent: Int) {
+        resetTextScalePercent = ResetTextScale.clampedPercent(percent)
+    }
+
+    func adjustResetTextScale(by delta: Int) {
+        resetTextScalePercent = ResetTextScale.stepped(resetTextScalePercent, by: delta)
     }
 
     func toggleInformationMode() {

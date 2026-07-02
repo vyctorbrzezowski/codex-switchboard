@@ -98,6 +98,30 @@ enum AccountInformationMode: String {
     case focused
 }
 
+enum ResetTextScale {
+    static let defaultPercent = 100
+    static let minimumPercent = 80
+    static let maximumPercent = 200
+    static let stepPercent = 10
+    static let presets = [100, 125, 150]
+
+    static func clampedPercent(_ percent: Int) -> Int {
+        min(max(percent, minimumPercent), maximumPercent)
+    }
+
+    static func nearestPresetPercent(to percent: Int) -> Int {
+        presets.min { abs($0 - percent) < abs($1 - percent) } ?? defaultPercent
+    }
+
+    static func scale(for percent: Int) -> CGFloat {
+        CGFloat(clampedPercent(percent)) / 100
+    }
+
+    static func stepped(_ percent: Int, by delta: Int) -> Int {
+        clampedPercent(percent + delta)
+    }
+}
+
 extension String {
     fileprivate var codexSwitchboardNormalized: String {
         trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
