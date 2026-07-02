@@ -101,7 +101,7 @@ struct AccountListView: View {
             isReloginBlocked: vm.hasPendingAccountAction && !vm.isRelogging(acc),
             isSwitchingToCodex: vm.isSwitchingToCodex(acc),
             isActiveInCodex: vm.isActiveInCodex(acc),
-            showsCodexControls: vm.isCodexInstalled,
+            showsCodexControls: !vm.availableCodexSurfaces.isEmpty,
             isSwitchBlocked: vm.hasPendingAccountAction && !vm.isSwitchingToCodex(acc),
             isRemoving: vm.isRemoving(acc),
             isRemoveBlocked: vm.hasPendingAccountAction && !vm.isRemoving(acc),

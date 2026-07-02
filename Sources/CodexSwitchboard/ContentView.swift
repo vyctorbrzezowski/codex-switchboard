@@ -23,6 +23,10 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HeaderView(vm: viewModel)
             thinDivider
+            if !viewModel.availableCodexSurfaces.isEmpty {
+                CodexSurfaceBar(vm: viewModel)
+                thinDivider
+            }
 
             if viewModel.isLoading && viewModel.accounts.isEmpty {
                 SkeletonView()
@@ -95,6 +99,75 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 32)
             .padding(.horizontal, 16)
+        }
+    }
+}
+
+// MARK: - Codex Surfaces
+
+struct CodexSurfaceBar: View {
+    @ObservedObject var vm: UsageViewModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if vm.availableCodexSurfaces.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(vm.availableCodexSurfaces) { status in
+                        Button {
+                            vm.selectCodexSurface(status.kind)
+                        } label: {
+                            Label(status.kind.displayName, systemImage: iconName(for: status.kind))
+                                .font(.system(size: 11, weight: .semibold))
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 5)
+                                .background(status.kind == vm.selectedCodexSurface ? Color.primary.opacity(0.14) : Color.primary.opacity(0.05))
+                                .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if let status = vm.selectedSurfaceStatus {
+                HStack(spacing: 8) {
+                    Image(systemName: iconName(for: status.kind))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    Text(status.kind.displayName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                    Text(status.activeEmail ?? "Not logged in")
+                        .font(.system(size: 11))
+                        .foregroundColor(status.isLoggedIn ? .primary : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(status.authStoreMode)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.primary.opacity(0.07))
+                        .cornerRadius(4)
+                    if let sharedWith = status.sharedWith {
+                        Label("shared with \(sharedWith.displayName)", systemImage: "link")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(Color(hex: "FF9F0A"))
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.025))
+    }
+
+    private func iconName(for kind: CodexSurfaceKind) -> String {
+        switch kind {
+        case .desktop: return "macwindow"
+        case .cli: return "terminal"
         }
     }
 }
