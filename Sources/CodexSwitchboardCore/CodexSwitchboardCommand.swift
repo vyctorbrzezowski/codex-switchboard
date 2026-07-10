@@ -355,10 +355,19 @@ private final class CLISurfaceService {
         switch kind {
         case .desktop:
             return ["/Applications/ChatGPT.app", "/Applications/Codex.app"]
-                .contains { fileManager.fileExists(atPath: $0) } || running(.desktop)
+                .contains { isCodexDesktopApp(atPath: $0) } || running(.desktop)
         case .cli:
             return cliExecutablePath() != nil
         }
+    }
+
+    private func isCodexDesktopApp(atPath path: String) -> Bool {
+        let infoURL = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: infoURL),
+              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            return false
+        }
+        return info["CFBundleIdentifier"] as? String == "com.openai.codex"
     }
 
     private func running(_ kind: SurfaceKind) -> Bool {

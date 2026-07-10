@@ -2,6 +2,36 @@ import XCTest
 @testable import CodexSwitchboard
 
 final class CodexSurfaceStatusTests: XCTestCase {
+    func testDesktopAppLocatorSkipsOldNativeChatGPTApp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let chatGPT = root.appendingPathComponent("ChatGPT.app", isDirectory: true)
+        let codex = root.appendingPathComponent("Codex.app", isDirectory: true)
+        try writeAppBundle(at: chatGPT, bundleIdentifier: "com.openai.chat")
+        try writeAppBundle(at: codex, bundleIdentifier: "com.openai.codex")
+
+        let installed = CodexDesktopApp.installedURL(candidateURLs: [chatGPT, codex])
+
+        XCTAssertEqual(installed, codex)
+    }
+
+    func testDesktopAppLocatorPrefersUnifiedChatGPTApp() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let chatGPT = root.appendingPathComponent("ChatGPT.app", isDirectory: true)
+        let codex = root.appendingPathComponent("Codex.app", isDirectory: true)
+        try writeAppBundle(at: chatGPT, bundleIdentifier: "com.openai.codex")
+        try writeAppBundle(at: codex, bundleIdentifier: "com.openai.codex")
+
+        let installed = CodexDesktopApp.installedURL(candidateURLs: [chatGPT, codex])
+
+        XCTAssertEqual(installed, chatGPT)
+    }
+
     func testSharedCodexHomeAnnotatesBothSurfaces() {
         let desktop = CodexSurfaceStatus(
             kind: .desktop,
@@ -30,5 +60,16 @@ final class CodexSurfaceStatusTests: XCTestCase {
 
         XCTAssertEqual(statuses.first { $0.kind == .desktop }?.sharedWith, .cli)
         XCTAssertEqual(statuses.first { $0.kind == .cli }?.sharedWith, .desktop)
+    }
+
+    private func writeAppBundle(at url: URL, bundleIdentifier: String) throws {
+        let contents = url.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleIdentifier": bundleIdentifier],
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: contents.appendingPathComponent("Info.plist"))
     }
 }

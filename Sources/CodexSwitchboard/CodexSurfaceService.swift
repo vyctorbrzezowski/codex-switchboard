@@ -8,8 +8,21 @@ enum CodexDesktopApp {
         URL(fileURLWithPath: "/Applications/Codex.app"),
     ]
 
-    static func installedURL(fileManager: FileManager = .default) -> URL? {
-        candidateURLs.first { fileManager.fileExists(atPath: $0.path) }
+    static func installedURL(
+        fileManager: FileManager = .default,
+        candidateURLs: [URL] = CodexDesktopApp.candidateURLs
+    ) -> URL? {
+        candidateURLs.first { isCodexApp(at: $0, fileManager: fileManager) }
+    }
+
+    private static func isCodexApp(at url: URL, fileManager: FileManager) -> Bool {
+        let infoURL = url.appendingPathComponent("Contents/Info.plist")
+        guard fileManager.fileExists(atPath: infoURL.path),
+              let data = try? Data(contentsOf: infoURL),
+              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            return false
+        }
+        return info["CFBundleIdentifier"] as? String == bundleIdentifier
     }
 }
 
