@@ -57,7 +57,7 @@ Codex Switchboard automatically re-orders your accounts so the best one to use r
 ## Requirements
 
 - macOS 13 (Ventura) or newer
-- [Codex.app](https://github.com/openai/codex) installed in `/Applications/Codex.app` (for account switching)
+- `ChatGPT.app` installed in `/Applications` (legacy `Codex.app` is also supported)
 
 ## Installation
 

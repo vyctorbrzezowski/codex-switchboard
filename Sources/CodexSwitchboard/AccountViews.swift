@@ -681,7 +681,7 @@ struct CodexIconView: View {
     private static let image: NSImage = {
         let codexPNG = Bundle.main.url(forResource: "codex", withExtension: "png")
         let image = codexPNG.flatMap { NSImage(contentsOf: $0) }
-            ?? NSWorkspace.shared.icon(forFile: "/Applications/Codex.app")
+            ?? NSWorkspace.shared.icon(forFile: CodexDesktopApp.installedURL()?.path ?? "/Applications/ChatGPT.app")
         image.size = NSSize(width: 16, height: 16)
         image.isTemplate = true
         return image

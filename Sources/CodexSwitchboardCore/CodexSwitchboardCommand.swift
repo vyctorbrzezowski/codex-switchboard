@@ -354,7 +354,8 @@ private final class CLISurfaceService {
     private func detected(_ kind: SurfaceKind) -> Bool {
         switch kind {
         case .desktop:
-            return fileManager.fileExists(atPath: "/Applications/Codex.app") || running(.desktop)
+            return ["/Applications/ChatGPT.app", "/Applications/Codex.app"]
+                .contains { fileManager.fileExists(atPath: $0) } || running(.desktop)
         case .cli:
             return cliExecutablePath() != nil
         }
@@ -364,7 +365,11 @@ private final class CLISurfaceService {
         let lines = processLines()
         switch kind {
         case .desktop:
-            return lines.contains { $0.lowercased().contains("/applications/codex.app/contents/") }
+            return lines.contains {
+                let line = $0.lowercased()
+                return line.contains("/applications/chatgpt.app/contents/")
+                    || line.contains("/applications/codex.app/contents/")
+            }
         case .cli:
             return lines.contains { isCodexExecutableCommand($0.lowercased()) }
         }
