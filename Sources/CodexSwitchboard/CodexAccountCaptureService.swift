@@ -847,7 +847,7 @@ enum CodexAccountSwitchError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .codexAppMissing:
-            return "ChatGPT.app was not found in /Applications."
+            return "ChatGPT.app (or legacy Codex.app) was not found in /Applications."
         case let .capturedProfileMissing(email):
             return "Captured auth was not found for \(email)."
         case let .capturedProfileAmbiguous(email):
