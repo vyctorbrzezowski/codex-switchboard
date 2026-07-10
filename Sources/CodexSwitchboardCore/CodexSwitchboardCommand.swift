@@ -354,31 +354,18 @@ private final class CLISurfaceService {
     private func detected(_ kind: SurfaceKind) -> Bool {
         switch kind {
         case .desktop:
-            return ["/Applications/ChatGPT.app", "/Applications/Codex.app"]
+            return codexDesktopAppPaths
                 .contains { isCodexDesktopApp(atPath: $0) } || running(.desktop)
         case .cli:
             return cliExecutablePath() != nil
         }
     }
 
-    private func isCodexDesktopApp(atPath path: String) -> Bool {
-        let infoURL = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
-        guard let data = try? Data(contentsOf: infoURL),
-              let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
-            return false
-        }
-        return info["CFBundleIdentifier"] as? String == "com.openai.codex"
-    }
-
     private func running(_ kind: SurfaceKind) -> Bool {
         let lines = processLines()
         switch kind {
         case .desktop:
-            return lines.contains {
-                let line = $0.lowercased()
-                return line.contains("/applications/chatgpt.app/contents/")
-                    || line.contains("/applications/codex.app/contents/")
-            }
+            return lines.contains { isCodexDesktopProcessCommand($0.lowercased()) }
         case .cli:
             return lines.contains { isCodexExecutableCommand($0.lowercased()) }
         }
@@ -1240,7 +1227,7 @@ private func processLinesWithPID() -> [(pid: Int32, command: String)] {
 }
 
 private func isCodexConsumerCommand(_ lowercasedCommand: String) -> Bool {
-    if lowercasedCommand.contains("/applications/codex.app/contents/") {
+    if isCodexDesktopProcessCommand(lowercasedCommand) {
         return true
     }
     if isCodexExecutableCommand(lowercasedCommand) {
@@ -1256,6 +1243,27 @@ private func isCodexConsumerCommand(_ lowercasedCommand: String) -> Bool {
             lowercasedCommand.contains("/node_repl ")
                 || lowercasedCommand.hasSuffix("/node_repl")
         )
+}
+
+private let codexDesktopAppPaths = [
+    "/Applications/ChatGPT.app",
+    "/Applications/Codex.app",
+]
+
+private func isCodexDesktopProcessCommand(_ lowercasedCommand: String) -> Bool {
+    codexDesktopAppPaths.contains { appPath in
+        lowercasedCommand.contains("\(appPath.lowercased())/contents/")
+            && isCodexDesktopApp(atPath: appPath)
+    }
+}
+
+private func isCodexDesktopApp(atPath path: String) -> Bool {
+    let infoURL = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
+    guard let data = try? Data(contentsOf: infoURL),
+          let info = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+        return false
+    }
+    return info["CFBundleIdentifier"] as? String == "com.openai.codex"
 }
 
 private func isCodexExecutableCommand(_ lowercasedCommand: String) -> Bool {

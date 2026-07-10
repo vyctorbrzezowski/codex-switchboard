@@ -18,6 +18,15 @@ final class CodexSwitchboardCLITests: XCTestCase {
         XCTAssertTrue(source.contains(#"consumers_running"#))
     }
 
+    func testUnifiedChatGPTUsesBundleValidatedProcessClassification() throws {
+        let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
+        XCTAssertTrue(source.contains(#"isCodexDesktopProcessCommand($0.lowercased())"#))
+        XCTAssertTrue(source.contains(#"if isCodexDesktopProcessCommand(lowercasedCommand)"#))
+        XCTAssertTrue(source.contains(#"/Applications/ChatGPT.app"#))
+        XCTAssertTrue(source.contains(#"info["CFBundleIdentifier"] as? String == "com.openai.codex""#))
+        XCTAssertFalse(source.contains(#"line.contains("/applications/chatgpt.app/contents/")"#))
+    }
+
     func testCLIRefusesUnsupportedAuthStoreModes() throws {
         let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
         XCTAssertTrue(source.contains(#"supportsFileSwitching"#))
