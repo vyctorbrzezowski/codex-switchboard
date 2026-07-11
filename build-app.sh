@@ -22,7 +22,7 @@ cd "$ROOT"
 PRODUCT_NAME="${PRODUCT_NAME:-CodexSwitchboard}"
 DISPLAY_NAME="${DISPLAY_NAME:-Codex Switchboard}"
 BUNDLE_ID="${BUNDLE_ID:-app.codexswitchboard.menubar}"
-VERSION="${VERSION:-1.0.9}"
+VERSION="${VERSION:-1.0.10}"
 INSTALL_APPS="${INSTALL_APPS:-0}"
 
 ICNS="${ROOT}/Support/AppIcon.icns"

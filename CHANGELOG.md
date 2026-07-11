@@ -2,6 +2,11 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.10 - 2026-07-11
+
+- Fixed shared-auth safety checks so the unified `ChatGPT.app` is treated as a running Codex consumer before CLI account switches.
+- Made auth-file replacement atomic and owner-only, preserving the existing login if staging or replacement fails.
+
 ## 1.0.9 - 2026-07-11
 
 - Added support for the unified `ChatGPT.app` while retaining compatibility with the legacy `Codex.app`.
