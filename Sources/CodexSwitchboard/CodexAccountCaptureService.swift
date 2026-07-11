@@ -1115,7 +1115,7 @@ final class CodexAccountSwitchService: @unchecked Sendable {
         includeDesktopConsumers: Bool
     ) -> Bool {
         if includeDesktopConsumers,
-           lowercasedCommand.contains("/applications/codex.app/contents/") {
+           CodexDesktopApp.isDesktopProcessCommand(lowercasedCommand) {
             return true
         }
         if lowercasedCommand == "codex" || lowercasedCommand.hasPrefix("codex ") {
@@ -1138,14 +1138,11 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     }
 
     private func copyReplacing(source: URL, destination: URL) throws {
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+        try CodexAuthFileTransaction.replace(
+            source: source,
+            destination: destination,
+            fileManager: fileManager
         )
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.copyItem(at: source, to: destination)
     }
 
     private func backupCLIAuthBeforeSwitch(at authURL: URL, to profile: CapturedCodexProfile) throws {

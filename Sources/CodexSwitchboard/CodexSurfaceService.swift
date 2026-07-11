@@ -16,6 +16,24 @@ enum CodexDesktopApp {
         candidateURLs.first { isCodexApp(at: $0, fileManager: fileManager) }
     }
 
+    static func isDesktopProcessCommand(
+        _ lowercasedCommand: String,
+        fileManager: FileManager = .default,
+        candidateURLs: [URL] = CodexDesktopApp.candidateURLs
+    ) -> Bool {
+        candidateURLs.contains { candidateURL in
+            guard isCodexApp(at: candidateURL, fileManager: fileManager) else {
+                return false
+            }
+            let contentsPath = candidateURL
+                .standardizedFileURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .path
+                .lowercased()
+            return lowercasedCommand.contains(contentsPath + "/")
+        }
+    }
+
     private static func isCodexApp(at url: URL, fileManager: FileManager) -> Bool {
         let infoURL = url.appendingPathComponent("Contents/Info.plist")
         guard fileManager.fileExists(atPath: infoURL.path),
