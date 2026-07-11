@@ -2,6 +2,17 @@
 
 All notable changes to Codex Switchboard will be documented here.
 
+## 1.0.9 - 2026-07-11
+
+- Added support for the unified `ChatGPT.app` while retaining compatibility with the legacy `Codex.app`.
+- Validated the desktop app by bundle identifier so the older native ChatGPT app is not mistaken for Codex Desktop.
+- Updated desktop detection, process safety checks, account switching, app relaunching, icon fallback, and CLI discovery for the new app path.
+- Added separate Codex Desktop and CLI auth-surface status, local profile switching, and the `codex-switchboard` CLI.
+- Added guarded consumer detection and file-backed auth-store checks so switches remain explicit and local-first.
+- Added opt-in auto-swap policies for low-quota failover, with paid-only candidate ranking, dry-run support, cooldowns, hourly limits, and redacted local audit history.
+- Hardened shared-auth consumer handling, token-rotation identity matching, per-surface credential-store detection, and concurrent audit writes.
+- Added an orchestrator skill for inspecting and switching local Codex profiles safely.
+
 ## 1.0.8 - 2026-05-29
 
 - Removed every `grant_type=refresh_token` path from Switchboard; the app now never spends refresh tokens.
