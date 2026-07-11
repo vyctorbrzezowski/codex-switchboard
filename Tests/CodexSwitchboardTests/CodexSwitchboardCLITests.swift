@@ -21,7 +21,6 @@ final class CodexSwitchboardCLITests: XCTestCase {
     func testUnifiedChatGPTUsesBundleValidatedProcessClassification() throws {
         let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
         XCTAssertTrue(source.contains(#"isCodexDesktopProcessCommand($0.lowercased())"#))
-        XCTAssertTrue(source.contains(#"if isCodexDesktopProcessCommand(lowercasedCommand)"#))
         XCTAssertTrue(source.contains(#"/Applications/ChatGPT.app"#))
         XCTAssertTrue(source.contains(#"info["CFBundleIdentifier"] as? String == "com.openai.codex""#))
         XCTAssertFalse(source.contains(#"line.contains("/applications/chatgpt.app/contents/")"#))
@@ -32,7 +31,6 @@ final class CodexSwitchboardCLITests: XCTestCase {
         XCTAssertTrue(source.contains(#"supportsFileSwitching"#))
         XCTAssertTrue(source.contains(#"unsupported_auth_store_mode"#))
         XCTAssertTrue(source.contains("keyring, auto, and ephemeral modes are detected but not mutated"))
-        XCTAssertTrue(source.contains(#"cli_auth_credentials_store"#))
     }
 
     func testCLIDeclaresAutoSwapCommands() throws {
@@ -41,17 +39,10 @@ final class CodexSwitchboardCLITests: XCTestCase {
         XCTAssertTrue(source.contains(#"autoswap enable --surface cli|desktop|both --json"#))
         XCTAssertTrue(source.contains(#"autoswap run-once --surface cli|desktop|both --json"#))
         XCTAssertTrue(source.contains(#"--dry-run"#))
-        XCTAssertTrue(source.contains(#"max_switches_per_hour"#))
         XCTAssertFalse(source.contains(#"allowStopConsumers"#))
         XCTAssertFalse(source.contains(#"let switches: [SwitchPayload]"#))
         XCTAssertFalse(source.contains(#"uniqueSurfaces"#))
         XCTAssertTrue(source.contains(#"AutoSwapSwitchPayload"#))
-    }
-
-    func testAppAutoSwapBlocksRunningSurfaces() throws {
-        let source = try String(contentsOf: usageViewModelSourceURL(), encoding: .utf8)
-        XCTAssertTrue(source.contains(#"status.running"#))
-        XCTAssertTrue(source.contains(#"reason: .consumersRunning"#))
     }
 
     func testAppAutoSwapRanksOnlyCapturedUsableAccounts() throws {
@@ -60,13 +51,6 @@ final class CodexSwitchboardCLITests: XCTestCase {
         XCTAssertTrue(viewModel.contains(#"autoSwapAccount(needsRelogin: needsRelogin($0))"#))
         XCTAssertTrue(adapter.contains(#"usableForCodex: isUsableForCodex && !needsRelogin"#))
         XCTAssertTrue(adapter.contains(#"needsRelogin: needsRelogin"#))
-    }
-
-    func testCLIUsesStableAuthIdentityForActiveProfileMatching() throws {
-        let source = try String(contentsOf: cliSourceURL(), encoding: .utf8)
-        XCTAssertTrue(source.contains(#"matchesStableIdentity"#))
-        XCTAssertTrue(source.contains(#"subject:"#))
-        XCTAssertTrue(source.contains(#"accountIDsCompatible"#))
     }
 
     func testCLIConsumerChecksAreSurfaceScoped() throws {

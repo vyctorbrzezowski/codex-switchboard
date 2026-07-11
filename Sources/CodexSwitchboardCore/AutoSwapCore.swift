@@ -1,8 +1,77 @@
+import Darwin
 import Foundation
 
 public enum AutoSwapSurfaceKind: String, Codable, CaseIterable, Hashable {
     case desktop
     case cli
+}
+
+public struct CodexAuthIdentity: Equatable {
+    public let subject: String
+    public let accountID: String
+    public let email: String
+
+    public init(subject: String, accountID: String, email: String) {
+        self.subject = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.accountID = accountID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.email = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    public func matches(_ other: CodexAuthIdentity) -> Bool {
+        if !subject.isEmpty, !other.subject.isEmpty {
+            return subject == other.subject
+                && !accountID.isEmpty
+                && !other.accountID.isEmpty
+                && accountID == other.accountID
+        }
+        if !accountID.isEmpty, !other.accountID.isEmpty {
+            return accountID == other.accountID
+        }
+        if !email.isEmpty, email == other.email {
+            return accountIDsCompatible(accountID, other.accountID)
+        }
+        return false
+    }
+
+    private func accountIDsCompatible(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.isEmpty || rhs.isEmpty || lhs == rhs
+    }
+}
+
+public enum CodexCredentialStoreMode {
+    public static func resolve(config: String?, surface: AutoSwapSurfaceKind) -> String {
+        guard let config else { return "file" }
+        let keys = surface == .cli
+            ? ["cli_auth_credentials_store", "auth_credentials_store_mode", "auth_credentials_store"]
+            : ["auth_credentials_store_mode", "auth_credentials_store"]
+
+        for rawLine in config.split(separator: "\n") {
+            let line = rawLine.split(separator: "#", maxSplits: 1).first?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard keys.contains(key) else { continue }
+            return parts[1]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                .lowercased()
+        }
+        return "file"
+    }
+}
+
+public enum AutoSwapSurfaceTopology {
+    public static func consumerKinds(
+        for surface: AutoSwapSurfaceKind,
+        sharedWith: AutoSwapSurfaceKind?
+    ) -> Set<AutoSwapSurfaceKind> {
+        var kinds: Set<AutoSwapSurfaceKind> = [surface]
+        if let sharedWith {
+            kinds.insert(sharedWith)
+        }
+        return kinds
+    }
 }
 
 public enum AutoSwapDecisionKind: String, Codable {
@@ -385,6 +454,7 @@ public final class AutoSwapAuditStore {
 
     private let url: URL
     private let maxEvents: Int
+    private let processLock = NSLock()
 
     public init(url: URL, maxEvents: Int = 100) {
         self.url = url
@@ -400,15 +470,17 @@ public final class AutoSwapAuditStore {
     }
 
     public func record(_ event: AutoSwapAuditEvent) throws {
-        var events = load()
-        events.append(event)
-        if events.count > maxEvents {
-            events = Array(events.suffix(maxEvents))
+        try withExclusiveLock {
+            var events = load()
+            events.append(event)
+            if events.count > maxEvents {
+                events = Array(events.suffix(maxEvents))
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            try write(encoder.encode(Payload(events: events)), permissions: 0o600)
         }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try write(encoder.encode(Payload(events: events)), permissions: 0o600)
     }
 
     private func decoder() -> JSONDecoder {
@@ -440,5 +512,29 @@ public final class AutoSwapAuditStore {
             try fileManager.moveItem(at: tempURL, to: url)
         }
         try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path)
+    }
+
+    private func withExclusiveLock<T>(_ body: () throws -> T) throws -> T {
+        processLock.lock()
+        defer { processLock.unlock() }
+        let fileManager = FileManager.default
+        let directory = url.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let lockURL = url.appendingPathExtension("lock")
+        let descriptor = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(descriptor) }
+        _ = Darwin.fchmod(descriptor, S_IRUSR | S_IWUSR)
+        guard Darwin.lockf(descriptor, F_LOCK, 0) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { _ = Darwin.lockf(descriptor, F_ULOCK, 0) }
+        return try body()
     }
 }

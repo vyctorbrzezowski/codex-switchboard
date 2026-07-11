@@ -207,45 +207,20 @@ private final class CommandRunner {
             }
             let authStoreKey = surface.authStorePath.isEmpty ? surface.kind.rawValue : surface.authStorePath
             if switchedAuthStores.contains(authStoreKey) {
-                decisions.append(AutoSwapDecision(
-                    generatedAt: Date(),
-                    surface: planned.surface,
-                    decision: .switched,
-                    reason: .switched,
-                    activeProfileKey: planned.activeProfileKey,
-                    candidateProfileKey: planned.candidateProfileKey,
-                    triggerSessionFreePercent: planned.triggerSessionFreePercent,
-                    triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
-                    targetMinSessionFreePercent: planned.targetMinSessionFreePercent
-                ))
+                let switched = switchedDecision(from: planned)
+                try recordSwitch(switched)
+                decisions.append(switched)
                 continue
             }
             let outcome = try switchService.switchProfile(
                 profileKey: candidate,
-                scope: SurfaceScope(surface.kind),
+                surfaces: [surface],
                 stopConsumers: stopConsumers
             )
             switchedAuthStores.insert(authStoreKey)
             switches.append(AutoSwapSwitchPayload(outcome: outcome))
-            let switched = AutoSwapDecision(
-                generatedAt: Date(),
-                surface: planned.surface,
-                decision: .switched,
-                reason: .switched,
-                activeProfileKey: planned.activeProfileKey,
-                candidateProfileKey: planned.candidateProfileKey,
-                triggerSessionFreePercent: planned.triggerSessionFreePercent,
-                triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
-                targetMinSessionFreePercent: planned.targetMinSessionFreePercent
-            )
-            try autoSwapAuditStore.record(AutoSwapAuditEvent(
-                generatedAt: switched.generatedAt,
-                surface: switched.surface,
-                decision: switched.decision,
-                reason: .thresholdReached,
-                fromProfileKey: switched.activeProfileKey,
-                toProfileKey: switched.candidateProfileKey
-            ))
+            let switched = switchedDecision(from: planned)
+            try recordSwitch(switched)
             decisions.append(switched)
         }
 
@@ -258,6 +233,31 @@ private final class CommandRunner {
             switches: switches
         )
         return CommandResult(payload: .autoSwapRun(payload), json: options.json, exitCode: 0)
+    }
+
+    private func switchedDecision(from planned: AutoSwapDecision) -> AutoSwapDecision {
+        AutoSwapDecision(
+            generatedAt: Date(),
+            surface: planned.surface,
+            decision: .switched,
+            reason: .switched,
+            activeProfileKey: planned.activeProfileKey,
+            candidateProfileKey: planned.candidateProfileKey,
+            triggerSessionFreePercent: planned.triggerSessionFreePercent,
+            triggerWeeklyFreePercent: planned.triggerWeeklyFreePercent,
+            targetMinSessionFreePercent: planned.targetMinSessionFreePercent
+        )
+    }
+
+    private func recordSwitch(_ switched: AutoSwapDecision) throws {
+        try autoSwapAuditStore.record(AutoSwapAuditEvent(
+            generatedAt: switched.generatedAt,
+            surface: switched.surface,
+            decision: switched.decision,
+            reason: .thresholdReached,
+            fromProfileKey: switched.activeProfileKey,
+            toProfileKey: switched.candidateProfileKey
+        ))
     }
 
     private func autoswapDecisions(policy: AutoSwapPolicy, scope: SurfaceScope) -> [AutoSwapDecision] {
@@ -612,7 +612,7 @@ private final class CLISurfaceService {
         let authURL = codexHome.appendingPathComponent("auth.json")
         let activeAuth = StoredAuth.load(from: authURL)
         let match = activeAuth.flatMap { CapturedProfileStore(paths: paths).profileMatching(auth: $0) }
-        let mode = authStoreMode(in: codexHome)
+        let mode = authStoreMode(in: codexHome, for: kind)
         return SurfaceStatusPayload(
             kind: kind,
             displayName: kind.displayName,
@@ -676,34 +676,12 @@ private final class CLISurfaceService {
         return candidates.first { fileManager.isExecutableFile(atPath: $0) }
     }
 
-    private func authStoreMode(in codexHome: URL) -> String {
-        guard let config = try? String(
+    private func authStoreMode(in codexHome: URL, for kind: SurfaceKind) -> String {
+        let config = try? String(
             contentsOf: codexHome.appendingPathComponent("config.toml"),
             encoding: .utf8
-        ) else {
-            return "file"
-        }
-        for key in ["cli_auth_credentials_store", "auth_credentials_store_mode", "auth_credentials_store"] {
-            if let value = tomlStringValue(named: key, in: config) {
-                return value
-            }
-        }
-        return "file"
-    }
-
-    private func tomlStringValue(named key: String, in text: String) -> String? {
-        for rawLine in text.split(separator: "\n") {
-            let line = rawLine.split(separator: "#", maxSplits: 1).first?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard line.hasPrefix("\(key)") else { continue }
-            let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            return parts[1]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                .lowercased()
-        }
-        return nil
+        )
+        return CodexCredentialStoreMode.resolve(config: config, surface: kind.autoSwapKind)
     }
 }
 
@@ -777,11 +755,22 @@ private final class CLISwitchService {
     }
 
     func switchProfile(profileKey: String, scope: SurfaceScope, stopConsumers: Bool) throws -> SwitchPayload {
+        try switchProfile(
+            profileKey: profileKey,
+            surfaces: surfaceService.statuses(scope: scope),
+            stopConsumers: stopConsumers
+        )
+    }
+
+    func switchProfile(
+        profileKey: String,
+        surfaces: [SurfaceStatusPayload],
+        stopConsumers: Bool
+    ) throws -> SwitchPayload {
         let profileStore = CapturedProfileStore(paths: paths)
         let profile = try profileStore.profile(sourceProfileKey: profileKey)
         try validateCapturedProfile(profile)
 
-        let surfaces = surfaceService.statuses(scope: scope)
         let undetected = surfaces.filter { !$0.detected }
         if let firstUndetected = undetected.first {
             throw CLIError.surfaceNotDetected(
@@ -905,10 +894,13 @@ private final class CLISwitchService {
 
     private func consumerTargetKinds(for surfaces: [SurfaceStatusPayload]) -> Set<SurfaceKind> {
         surfaces.reduce(into: Set<SurfaceKind>()) { result, surface in
-            result.insert(surface.kind)
-            if surface.sharedAuthStore, let sharedWith = surface.sharedWith {
-                result.insert(sharedWith)
-            }
+            let sharedWith = surface.sharedAuthStore ? surface.sharedWith?.autoSwapKind : nil
+            let kinds = AutoSwapSurfaceTopology.consumerKinds(
+                for: surface.kind.autoSwapKind,
+                sharedWith: sharedWith
+            )
+            if kinds.contains(.desktop) { result.insert(.desktop) }
+            if kinds.contains(.cli) { result.insert(.cli) }
         }
     }
 
@@ -1129,28 +1121,16 @@ private struct StoredAuth {
     }
 
     func matchesStableIdentity(_ other: StoredAuth, capturedProfile: CapturedProfile) -> Bool {
-        if !subject.isEmpty, !other.subject.isEmpty, subject == other.subject {
-            return accountIDsCompatible(accountID, other.accountID)
-        }
-        if !accountID.isEmpty, !other.accountID.isEmpty, accountID == other.accountID {
-            return true
-        }
-        if !capturedProfile.accountID.isEmpty,
-           !other.accountID.isEmpty,
-           capturedProfile.accountID == other.accountID {
-            return true
-        }
-        if !email.isEmpty, !other.email.isEmpty, email == other.email {
-            return accountIDsCompatible(accountID, other.accountID)
-        }
-        if !capturedProfile.email.isEmpty, !other.email.isEmpty, capturedProfile.email == other.email {
-            return accountIDsCompatible(capturedProfile.accountID, other.accountID)
-        }
-        return false
+        CodexAuthIdentity(
+            subject: subject,
+            accountID: accountID.isEmpty ? capturedProfile.accountID : accountID,
+            email: email.isEmpty ? capturedProfile.email : email
+        )
+        .matches(other.identity)
     }
 
-    private func accountIDsCompatible(_ lhs: String, _ rhs: String) -> Bool {
-        lhs.isEmpty || rhs.isEmpty || lhs == rhs
+    private var identity: CodexAuthIdentity {
+        CodexAuthIdentity(subject: subject, accountID: accountID, email: email)
     }
 
     private static func decodePayload(_ token: String) -> [String: Any]? {

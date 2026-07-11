@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import CodexSwitchboardCore
 
@@ -60,6 +61,88 @@ final class AutoSwapDecisionTests: XCTestCase {
         XCTAssertEqual(decision.decision, .blocked)
         XCTAssertEqual(decision.reason, .cooldownActive)
         XCTAssertNil(decision.candidateProfileKey)
+    }
+
+    func testPolicyEncodesHourlySwitchLimitUsingPublicJSONKey() throws {
+        let data = try JSONEncoder().encode(AutoSwapPolicy(maxSwitchesPerHour: 7))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertEqual(object["max_switches_per_hour"] as? Int, 7)
+    }
+
+    func testStableIdentityRequiresWorkspaceForMatchingSubjects() {
+        let missingWorkspace = CodexAuthIdentity(
+            subject: "user-1",
+            accountID: "",
+            email: "user@example.com"
+        )
+        let sameMissingWorkspace = CodexAuthIdentity(
+            subject: "user-1",
+            accountID: "",
+            email: "user@example.com"
+        )
+        let workspaceA = CodexAuthIdentity(
+            subject: "user-1",
+            accountID: "workspace-a",
+            email: "user@example.com"
+        )
+        let workspaceB = CodexAuthIdentity(
+            subject: "user-1",
+            accountID: "workspace-b",
+            email: "user@example.com"
+        )
+
+        XCTAssertFalse(missingWorkspace.matches(sameMissingWorkspace))
+        XCTAssertFalse(workspaceA.matches(workspaceB))
+        XCTAssertTrue(workspaceA.matches(workspaceA))
+    }
+
+    func testDesktopIgnoresCLIOnlyCredentialStoreSetting() {
+        let config = """
+        cli_auth_credentials_store = "keyring"
+        """
+
+        XCTAssertEqual(CodexCredentialStoreMode.resolve(config: config, surface: .desktop), "file")
+        XCTAssertEqual(CodexCredentialStoreMode.resolve(config: config, surface: .cli), "keyring")
+    }
+
+    func testSharedAuthStoreExpandsConsumerKinds() {
+        XCTAssertEqual(
+            AutoSwapSurfaceTopology.consumerKinds(for: .cli, sharedWith: .desktop),
+            [.cli, .desktop]
+        )
+        XCTAssertEqual(
+            AutoSwapSurfaceTopology.consumerKinds(for: .cli, sharedWith: nil),
+            [.cli]
+        )
+    }
+
+    func testAuditStorePreservesConcurrentRecords() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AutoSwapAuditStore(url: root.appendingPathComponent("events.json"), maxEvents: 50)
+        let errorLock = NSLock()
+        var errors: [Error] = []
+
+        DispatchQueue.concurrentPerform(iterations: 20) { index in
+            do {
+                try store.record(AutoSwapAuditEvent(
+                    surface: .cli,
+                    decision: .switched,
+                    reason: .thresholdReached,
+                    fromProfileKey: "from",
+                    toProfileKey: "to-\(index)"
+                ))
+            } catch {
+                errorLock.lock()
+                errors.append(error)
+                errorLock.unlock()
+            }
+        }
+
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertEqual(Set(store.load().compactMap(\.toProfileKey)), Set((0..<20).map { "to-\($0)" }))
     }
 
     private func surface(kind: AutoSwapSurfaceKind, activeProfileKey: String?) -> AutoSwapSurface {

@@ -548,7 +548,8 @@ final class UsageViewModel: ObservableObject {
                 accounts: autoAccounts,
                 history: history
             )
-            if decision.decision == .wouldSwitch, status.running {
+            if decision.decision == .wouldSwitch,
+               status.hasRunningConsumer(in: codexSurfaceStatuses) {
                 nextDecisions[status.kind] = AutoSwapDecision(
                     generatedAt: Date(),
                     surface: status.kind.autoSwapKind,
