@@ -847,7 +847,7 @@ enum CodexAccountSwitchError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .codexAppMissing:
-            return "Codex.app was not found in /Applications."
+            return "ChatGPT.app (or legacy Codex.app) was not found in /Applications."
         case let .capturedProfileMissing(email):
             return "Captured auth was not found for \(email)."
         case let .capturedProfileAmbiguous(email):
@@ -861,9 +861,11 @@ enum CodexAccountSwitchError: LocalizedError {
 final class CodexAccountSwitchService: @unchecked Sendable {
     private let fileManager = FileManager.default
     private let homeURL = FileManager.default.homeDirectoryForCurrentUser
-    private let appURL = URL(fileURLWithPath: "/Applications/Codex.app")
-    private let codexBundleIdentifier = "com.openai.codex"
     private let authMirrorService = CodexAuthMirrorService()
+
+    private var appURL: URL? {
+        CodexDesktopApp.installedURL(fileManager: fileManager)
+    }
 
     private var profileStoreURL: URL {
         AppStorage.profilesURL
@@ -874,12 +876,13 @@ final class CodexAccountSwitchService: @unchecked Sendable {
     }
 
     private var bundledCodexURL: URL {
-        appURL.appendingPathComponent("Contents/Resources/codex")
+        appURL?.appendingPathComponent("Contents/Resources/codex")
+            ?? CodexDesktopApp.candidateURLs[0].appendingPathComponent("Contents/Resources/codex")
     }
 
     var isCodexInstalled: Bool {
-        fileManager.fileExists(atPath: appURL.path)
-            || !NSRunningApplication.runningApplications(withBundleIdentifier: codexBundleIdentifier).isEmpty
+        appURL != nil
+            || !NSRunningApplication.runningApplications(withBundleIdentifier: CodexDesktopApp.bundleIdentifier).isEmpty
     }
 
     func switchToAccount(_ account: Account) throws -> CodexSwitchResult {
@@ -1000,11 +1003,14 @@ final class CodexAccountSwitchService: @unchecked Sendable {
 
     private func runningCodexApps() -> [NSRunningApplication] {
         NSRunningApplication
-            .runningApplications(withBundleIdentifier: codexBundleIdentifier)
+            .runningApplications(withBundleIdentifier: CodexDesktopApp.bundleIdentifier)
             .filter { !$0.isTerminated }
     }
 
     private func launchCodex() throws {
+        guard let appURL else {
+            throw CodexAccountSwitchError.codexAppMissing
+        }
         try run("/usr/bin/open", ["-n", appURL.path])
     }
 
