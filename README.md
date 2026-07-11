@@ -32,7 +32,7 @@
 - Switch active accounts with one click
 - Identify invalid or deactivated accounts
 
-> **Disclaimer:** Codex Switchboard is not affiliated with OpenAI. It does not change Codex/OpenAI limits, share accounts, or automate account cycling. It only helps you view local usage state and manually switch between accounts you control.
+> **Disclaimer:** Codex Switchboard is not affiliated with OpenAI. It does not change Codex/OpenAI limits or share accounts. Automatic switching is off by default and, when enabled, only performs local opt-in failover between captured profiles you control.
 
 ## Features
 
@@ -44,6 +44,7 @@
 - **Local-First** — All data stays on your machine; no cloud sync
 - **Secure Token Storage** — Sensitive files written with `0600` permissions
 - **Smart Ordering** — Accounts are implicitly ranked by a composite score so the "best account to use now" surfaces to the top
+- **Opt-in Auto-swap** — Optional per-surface failover can switch when the active profile drops to 5% remaining and a paid captured profile has at least 30% session quota available.
 
 ## Smart Ordering
 
@@ -100,6 +101,8 @@ Codex Switchboard is local-first and never syncs tokens or exposes a remote serv
 | `~/Library/Application Support/CodexSwitchboard/profiles/<profile>/meta.json` | Profile metadata |
 | `~/Library/Application Support/CodexSwitchboard/accounts-snapshot.json` | Usage snapshots |
 | `~/Library/Application Support/CodexSwitchboard/team-name-cache.json` | Team name cache |
+| `~/Library/Application Support/CodexSwitchboard/auto-swap-policy.json` | Auto-swap preferences |
+| `~/Library/Application Support/CodexSwitchboard/auto-swap-events.json` | Redacted auto-swap audit events |
 | `~/Library/Application Support/CodexSwitchboard/backups/<timestamp>-remove-account/` | Backups before removal |
 
 All sensitive files are written with `0600` permissions. Removal actions create backups before deleting profile data.
@@ -133,7 +136,7 @@ It shows best-effort Codex usage and reset timing from the local app using your 
 
 ### Does it switch Codex accounts automatically?
 
-No. Codex Switchboard does not automate account cycling. It only changes the active local Codex account after an explicit manual action.
+Only when you explicitly enable auto-swap for Codex Desktop or Codex CLI. Auto-swap is off by default, excludes free-plan accounts by default, writes only redacted audit events, and refuses unsafe storage/consumer states instead of printing or copying raw tokens.
 
 ### Does it upload tokens or account data?
 

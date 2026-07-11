@@ -62,6 +62,39 @@ final class CodexSurfaceStatusTests: XCTestCase {
         XCTAssertEqual(statuses.first { $0.kind == .cli }?.sharedWith, .desktop)
     }
 
+    func testSharedCLISurfaceTreatsRunningDesktopAsConsumer() {
+        let desktop = surface(kind: .desktop, running: true, sharedWith: .cli)
+        let cli = surface(kind: .cli, running: false, sharedWith: .desktop)
+
+        XCTAssertTrue(cli.hasRunningConsumer(in: [desktop, cli]))
+        XCTAssertTrue(desktop.hasRunningConsumer(in: [desktop, cli]))
+    }
+
+    func testIsolatedCLISurfaceDoesNotInheritDesktopConsumer() {
+        let desktop = surface(kind: .desktop, running: true, sharedWith: nil)
+        let cli = surface(kind: .cli, running: false, sharedWith: nil)
+
+        XCTAssertFalse(cli.hasRunningConsumer(in: [desktop, cli]))
+    }
+
+    private func surface(
+        kind: CodexSurfaceKind,
+        running: Bool,
+        sharedWith: CodexSurfaceKind?
+    ) -> CodexSurfaceStatus {
+        CodexSurfaceStatus(
+            kind: kind,
+            detected: true,
+            running: running,
+            codexHomePath: sharedWith == nil ? "/tmp/\(kind.rawValue)" : "/tmp/shared",
+            authStoreMode: "file",
+            activeProfileKey: "active",
+            activeEmail: "user@example.com",
+            activeAccountID: "workspace",
+            sharedWith: sharedWith
+        )
+    }
+
     private func writeAppBundle(at url: URL, bundleIdentifier: String) throws {
         let contents = url.appendingPathComponent("Contents", isDirectory: true)
         try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)

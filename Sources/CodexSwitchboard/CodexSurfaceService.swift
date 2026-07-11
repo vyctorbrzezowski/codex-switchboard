@@ -1,4 +1,5 @@
 import AppKit
+import CodexSwitchboardCore
 import Foundation
 
 enum CodexDesktopApp {
@@ -56,6 +57,10 @@ struct CodexSurfaceStatus: Identifiable, Equatable, Codable {
     var isLoggedIn: Bool {
         activeEmail?.isEmpty == false || activeAccountID?.isEmpty == false
     }
+
+    func hasRunningConsumer(in statuses: [CodexSurfaceStatus]) -> Bool {
+        running || statuses.contains { $0.kind == sharedWith && $0.running }
+    }
 }
 
 final class CodexSurfaceService {
@@ -110,7 +115,7 @@ final class CodexSurfaceService {
             detected: isDesktopDetected(running: running),
             running: running,
             codexHomePath: codexHome.standardizedFileURL.path,
-            authStoreMode: authStoreMode(in: codexHome),
+            authStoreMode: authStoreMode(in: codexHome, for: .desktop),
             activeProfileKey: activeProfileKey(for: activeAuth),
             activeEmail: activeAuth?.email,
             activeAccountID: activeAuth?.accountID,
@@ -127,7 +132,7 @@ final class CodexSurfaceService {
             detected: cliExecutablePath() != nil || running,
             running: running,
             codexHomePath: codexHome.standardizedFileURL.path,
-            authStoreMode: authStoreMode(in: codexHome),
+            authStoreMode: authStoreMode(in: codexHome, for: .cli),
             activeProfileKey: activeProfileKey(for: activeAuth),
             activeEmail: activeAuth?.email,
             activeAccountID: activeAuth?.accountID,
@@ -173,47 +178,43 @@ final class CodexSurfaceService {
         StoredCodexAuth.load(from: codexHome.appendingPathComponent("auth.json"))
     }
 
-    private func authStoreMode(in codexHome: URL) -> String {
-        guard let config = try? String(
+    private func authStoreMode(in codexHome: URL, for kind: CodexSurfaceKind) -> String {
+        let config = try? String(
             contentsOf: codexHome.appendingPathComponent("config.toml"),
             encoding: .utf8
-        ) else {
-            return "file"
-        }
-
-        for key in ["auth_credentials_store_mode", "auth_credentials_store"] {
-            if let value = tomlStringValue(named: key, in: config) {
-                return value
-            }
-        }
-        return "file"
-    }
-
-    private func tomlStringValue(named key: String, in text: String) -> String? {
-        for rawLine in text.split(separator: "\n") {
-            let line = rawLine.split(separator: "#", maxSplits: 1).first?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard line.hasPrefix("\(key)") else { continue }
-            let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            return parts[1]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                .lowercased()
-        }
-        return nil
+        )
+        return CodexCredentialStoreMode.resolve(config: config, surface: kind.autoSwapKind)
     }
 
     private func activeProfileKey(for activeAuth: StoredCodexAuth?) -> String? {
         guard let activeAuth else { return nil }
-        return capturedProfileAuths().first { profile in
-            profile.auth.idToken == activeAuth.idToken
-                && profile.auth.accessToken == activeAuth.accessToken
-                && profile.auth.refreshToken == activeAuth.refreshToken
-        }?.sourceProfileKey
+        let profiles = capturedProfileAuths()
+        let exactKeys = Set(profiles.compactMap { profile -> String? in
+            guard profile.auth.idToken == activeAuth.idToken,
+                  profile.auth.accessToken == activeAuth.accessToken,
+                  profile.auth.refreshToken == activeAuth.refreshToken else {
+                return nil
+            }
+            return profile.sourceProfileKey
+        })
+        if exactKeys.count == 1 {
+            return exactKeys.first
+        }
+
+        let activeIdentity = activeAuth.codexIdentity
+        let stableKeys = Set(profiles.compactMap { profile -> String? in
+            let capturedIdentity = CodexAuthIdentity(
+                subject: profile.auth.subject,
+                accountID: profile.auth.accountID.isEmpty ? profile.accountID : profile.auth.accountID,
+                email: profile.auth.email.isEmpty ? profile.email : profile.auth.email
+            )
+            guard capturedIdentity.matches(activeIdentity) else { return nil }
+            return profile.sourceProfileKey
+        })
+        return stableKeys.count == 1 ? stableKeys.first : nil
     }
 
-    private func capturedProfileAuths() -> [(auth: StoredCodexAuth, sourceProfileKey: String?)] {
+    private func capturedProfileAuths() -> [CapturedSurfaceProfile] {
         guard let entries = try? fileManager.contentsOfDirectory(
             at: AppStorage.profilesURL,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -229,8 +230,20 @@ final class CodexSurfaceService {
                 return nil
             }
             let meta = AppStorage.readJSON(entry.appendingPathComponent("meta.json")) ?? [:]
-            return (auth, meta["source_profile_key"] as? String)
+            return CapturedSurfaceProfile(
+                auth: auth,
+                sourceProfileKey: meta["source_profile_key"] as? String,
+                accountID: (meta["account_id"] as? String) ?? "",
+                email: ((meta["email"] as? String) ?? "").lowercased()
+            )
         }
+    }
+
+    private struct CapturedSurfaceProfile {
+        let auth: StoredCodexAuth
+        let sourceProfileKey: String?
+        let accountID: String
+        let email: String
     }
 
     private func cliExecutablePath() -> String? {
@@ -277,5 +290,11 @@ final class CodexSurfaceService {
         } catch {
             return []
         }
+    }
+}
+
+private extension StoredCodexAuth {
+    var codexIdentity: CodexAuthIdentity {
+        CodexAuthIdentity(subject: subject, accountID: accountID, email: email)
     }
 }

@@ -156,6 +156,27 @@ struct CodexSurfaceBar: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(vm.isAutoSwapEnabled(for: status.kind) ? Color(hex: "30D158") : .secondary)
+                        Text(vm.autoSwapStatusText(for: status.kind))
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .frame(minWidth: 42, alignment: .trailing)
+                        Toggle(
+                            "",
+                            isOn: Binding(
+                                get: { vm.isAutoSwapEnabled(for: status.kind) },
+                                set: { vm.setAutoSwapEnabled($0, for: status.kind) }
+                            )
+                        )
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .labelsHidden()
+                        .disabled(vm.hasPendingAccountAction)
+                    }
+                    .help("Auto-swap at 5% remaining to a paid profile with 30%+ session quota")
                 }
             }
         }
